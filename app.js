@@ -174,19 +174,22 @@ async function fsListSwitches() {
   return out;
 }
 
-function newSampleFilename() {
+function newSampleFilename(prefix) {
   const d = new Date();
   const p = (n, w = 2) => String(n).padStart(w, "0");
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-` +
-         `${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}-` +
-         `${p(d.getMilliseconds(), 3)}.wav`;
+  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-` +
+                `${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}-` +
+                `${p(d.getMilliseconds(), 3)}`;
+  // Prefix groups samples by phase when sorted alphabetically. Numeric
+  // index in front keeps the four guided phases in capture order.
+  return (prefix ? prefix + "__" : "") + stamp + ".wav";
 }
 
-async function fsSaveSample(switchName, ab) {
+async function fsSaveSample(switchName, ab, prefix) {
   const root = state.storageHandle;
   if (!root) throw new Error("storage not set up");
   const dir = await root.getDirectoryHandle(switchName, { create: true });
-  const fname = newSampleFilename();
+  const fname = newSampleFilename(prefix);
   const fh = await dir.getFileHandle(fname, { create: true });
   const w = await fh.createWritable();
   await w.write(ab);
@@ -245,12 +248,26 @@ const state = {
   envAccum: 0, envCount: 0, envBucketSamples: 0,
 
   // --- levels & noise tracking ---
+  // floorEMA tracks the noise floor *in the high-passed signal* — room
+  // rumble (HVAC, traffic, fan) is filtered out before we measure, so
+  // bass drone can't inflate the trigger threshold and suppress real
+  // presses. autoThreshold is then 4× that band-limited floor.
   level: 0,
-  floorEMA: 0.01,
-  autoThreshold: 0.05,
+  floorEMA: 0.005,
+  autoThreshold: 0.02,
+  hpAlpha: 0,    // 1-pole high-pass coeff, computed once sample rate is known
+  hpPrevX: 0,
+  hpPrevY: 0,
 
   // --- segmentation parameters ---
-  tailMs: 220, gapMs: 90,
+  //   tailMs  how long the *high-passed* signal must stay below the tail
+  //           threshold (half of trigger) before the event closes. Longer
+  //           than the housing ring you'd ever care about.
+  //   gapMs   minimum quiet time after a finalized event before the next
+  //           one can open. 60 ms ≈ 200 wpm ceiling.
+  //   prerollMs  how much pre-trigger audio we splice in so the leading
+  //           transient (which crosses threshold mid-batch) is not clipped.
+  tailMs: 280, gapMs: 60, prerollMs: 50,
 
   // --- arm/segmentation runtime (the trigger that writes WAVs as you press) ---
   armed: false,
@@ -269,9 +286,21 @@ const state = {
   typingActive: false, typingStop: null, typingSwitch: null,
   typingPulses: [],
   typedChars: [],
+  // recent sample indices — keeps the same WAV from repeating back to
+  // back, which is the most obvious "fake" tell when listening
+  typingRecentIdx: [],
 
   // --- calibration ---
   calibrating: null,
+
+  // --- guided recording session ---
+  //   null when off. When active: { phaseIdx, capturedInPhase, totals }
+  //   The four-phase structure (5 light-slow, 5 hard-slow, 3 light-fast,
+  //   3 hard-fast) gives 16 labeled samples spanning velocity × tempo —
+  //   enough to derive an honest "average keypress" shape without the
+  //   guesswork of free-form capture, and labeled so the fingerprint can
+  //   later weight or filter by intent.
+  guided: null,
 
   // --- fingerprint settings (persisted; defaults read on first load) ---
   fft: { window: "flat-top", scale: "linear" },
@@ -391,6 +420,12 @@ async function enableMic() {
   if (ctx.state === "suspended") await ctx.resume();
   state.stream = stream;
   state.sampleRate = ctx.sampleRate;
+  // 1-pole high-pass at ~200 Hz. Removes room rumble / HVAC / traffic
+  // drone from the signal we use to estimate the noise floor and to
+  // trigger. y[n] = α (y[n-1] + x[n] - x[n-1]),  α = exp(-2π·fc/sr).
+  state.hpAlpha = Math.exp(-2 * Math.PI * 200 / ctx.sampleRate);
+  state.hpPrevX = 0;
+  state.hpPrevY = 0;
 
   await ctx.audioWorklet.addModule("/capture-worklet.js");
 
@@ -422,8 +457,17 @@ async function enableMic() {
 }
 
 // Audio render thread → main thread. Hot path: ring copy, envelope
-// bucket peak, sample-level trigger on batch peak. Block-RMS would
-// miss sharp keyswitch transients <5 ms long.
+// bucket peak, high-passed envelope, sample-level trigger.
+//
+// Two envelopes are tracked. The raw envelope (batchPeak) drives the
+// on-screen scope and the level meter — that's what the eye expects to
+// see. The high-passed envelope (hpBatchPeak) drives the noise-floor
+// EMA, the trigger, and the tail-close gate. Filtering out content
+// below ~200 Hz before we measure "is the room noisy?" or "is this
+// loud enough to be a press?" means HVAC drone and traffic rumble
+// can't inflate the threshold and can't be mistaken for a press —
+// they sit far below the floor in the band where keyswitch transients
+// actually live.
 function handleBatch(inp) {
   const ring = state.ring;
   if (!ring) return;
@@ -438,7 +482,12 @@ function handleBatch(inp) {
   const bucketSize = state.envBucketSamples;
   const wasInEvent = state.inEvent;
 
+  const hpAlpha = state.hpAlpha || 0.974;  // safe default if rate unknown
+  let hpPrevX = state.hpPrevX;
+  let hpPrevY = state.hpPrevY;
+
   let batchPeak = 0;
+  let hpBatchPeak = 0;
   for (let i = 0; i < inp.length; i++) {
     const s = inp[i];
     ring[w] = s;
@@ -446,6 +495,13 @@ function handleBatch(inp) {
     const a = s < 0 ? -s : s;
     if (a > envAccum) envAccum = a;
     if (a > batchPeak) batchPeak = a;
+
+    // 1-pole HP: y[n] = α (y[n-1] + x[n] - x[n-1])
+    const hp = hpAlpha * (hpPrevY + s - hpPrevX);
+    hpPrevX = s; hpPrevY = hp;
+    const ha = hp < 0 ? -hp : hp;
+    if (ha > hpBatchPeak) hpBatchPeak = ha;
+
     envCount++;
     if (envCount >= bucketSize) {
       env[envWrite] = envAccum;
@@ -459,13 +515,15 @@ function handleBatch(inp) {
   state.envWrite = envWrite;
   state.envAccum = envAccum;
   state.envCount = envCount;
+  state.hpPrevX = hpPrevX;
+  state.hpPrevY = hpPrevY;
   state.level = state.level * 0.65 + batchPeak * 0.35;
 
-  // noise floor: slow EMA of batch peak while not actively in a press.
+  // noise floor: slow EMA of high-passed peak while not in a press.
   if (!state.inEvent) {
-    state.floorEMA = state.floorEMA * 0.99 + batchPeak * 0.01;
+    state.floorEMA = state.floorEMA * 0.99 + hpBatchPeak * 0.01;
   }
-  state.autoThreshold = clamp(state.floorEMA * 4, 0.015, 0.5);
+  state.autoThreshold = clamp(state.floorEMA * 4, 0.008, 0.5);
 
   const blockStartAbs = state.absIdx;
   state.absIdx += inp.length;
@@ -473,25 +531,27 @@ function handleBatch(inp) {
 
   if (!state.armed) return;
 
-  // Trigger-based segmentation: a press starts when batchPeak crosses
-  // threshold (with a gap honored after the last event ended), ends after
-  // `tailMs` of continuous quiet. On end → finalizeEvent reads the ring
-  // buffer slice and writes the WAV directly to disk.
+  // Trigger-based segmentation. A press opens when hpBatchPeak crosses
+  // the (4× HP-floor) trigger, honoring `gapMs` after the last close.
+  // The press closes after `tailMs` of hpBatchPeak below *half* the
+  // trigger — housing ring sits between the floor and the trigger and
+  // is part of the switch's identity, not noise.
   const thr = state.autoThreshold;
-  const sr = state.sampleRate;
+  const tailThr = thr * 0.5;
   const gapSamp = Math.floor((state.gapMs / 1000) * sr);
   const tailSamp = Math.floor((state.tailMs / 1000) * sr);
+  const prerollSamp = Math.floor((state.prerollMs / 1000) * sr);
 
   if (!state.inEvent) {
-    if (batchPeak > thr &&
+    if (hpBatchPeak > thr &&
         (state.lastEventEndAbs < 0 ||
          blockStartAbs - state.lastEventEndAbs > gapSamp)) {
       state.inEvent = true;
-      state.eventStartAbs = Math.max(0, blockStartAbs - Math.floor(sr * 0.03));
+      state.eventStartAbs = Math.max(0, blockStartAbs - prerollSamp);
       state.belowSinceAbs = -1;
     }
   } else {
-    if (batchPeak > thr) {
+    if (hpBatchPeak > tailThr) {
       state.belowSinceAbs = -1;
     } else {
       if (state.belowSinceAbs < 0) state.belowSinceAbs = blockStartAbs;
@@ -526,32 +586,36 @@ function readRingRange(startAbs, endAbs) {
 
 // ============== segmentation: save event as WAV ====================
 
+// 32-bit IEEE float WAV (format code 3). Chosen over 16-bit PCM because
+// the quiet end of the housing ring-out sits well below the −90 dB floor
+// where Int16 quantizes to zero — keeping the tail intact matters for a
+// faithful fingerprint. Modern browsers, Audacity, sox, ffmpeg, and most
+// DAWs read this format directly. Mono, 1 channel.
 function encodeWav(float32, sampleRate) {
   const n = float32.length;
-  const buf = new ArrayBuffer(44 + n * 2);
+  const dataSize = n * 4;
+  const buf = new ArrayBuffer(44 + dataSize);
   const view = new DataView(buf);
   const writeStr = (p, s) => {
     for (let i = 0; i < s.length; i++) view.setUint8(p + i, s.charCodeAt(i));
   };
   writeStr(0, "RIFF");
-  view.setUint32(4, 36 + n * 2, true);
+  view.setUint32(4, 36 + dataSize, true);
   writeStr(8, "WAVE");
   writeStr(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
+  view.setUint32(16, 16, true);            // fmt chunk size
+  view.setUint16(20, 3, true);             // format code 3 = IEEE float
+  view.setUint16(22, 1, true);             // channels
   view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
+  view.setUint32(28, sampleRate * 4, true); // byteRate
+  view.setUint16(32, 4, true);             // blockAlign
+  view.setUint16(34, 32, true);            // bitsPerSample
   writeStr(36, "data");
-  view.setUint32(40, n * 2, true);
+  view.setUint32(40, dataSize, true);
   let p = 44;
   for (let i = 0; i < n; i++) {
-    let s = float32[i];
-    s = s < -1 ? -1 : s > 1 ? 1 : s;
-    view.setInt16(p, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-    p += 2;
+    view.setFloat32(p, float32[i], true);
+    p += 4;
   }
   return buf;
 }
@@ -594,16 +658,174 @@ function disarm() {
   setStatus(`saved ${state.sessionCount} sample${state.sessionCount === 1 ? "" : "s"}`);
 }
 
+
+// ============== guided recording ===================================
+//
+// A structured capture session that walks the user through four phases
+// of presses (light-slow, hard-slow, light-fast, hard-fast). Each phase
+// has a target count; samples land on disk prefixed with the phase id so
+// they cluster by phase when sorted. The system trusts that audio events
+// inside a phase's listening window are presses (skipping the non-unit
+// rejection), and shows live "X of N" feedback so the user can see
+// captures happening as they go.
+
+const GUIDED_PHASES = [
+  { id: "light-slow", label: "5 light · slow",  count: 5,
+    hint: "barely there — full key travel, slow as a daydream" },
+  { id: "hard-slow",  label: "5 firm · slow",   count: 5,
+    hint: "deliberate bottom-outs, same slow tempo" },
+  { id: "light-fast", label: "3 light · fast",  count: 3,
+    hint: "rapid taps, almost a brush" },
+  { id: "hard-fast",  label: "3 firm · fast",   count: 3,
+    hint: "fast and definite — the rolling-thunder finish" },
+];
+
+async function startGuided() {
+  if (state.guided) return;
+  if (!state.audioCtx || !state.stream) {
+    try { await enableMic(); }
+    catch (e) { setStatus("mic error: " + e.message); return; }
+  }
+  if (!state.currentSwitch) {
+    alert("create or select a switch first");
+    return;
+  }
+  if (!state.storageHandle) {
+    showStorageGate(state.storageName);
+    return;
+  }
+  state.guided = { phaseIdx: 0, capturedInPhase: 0, totalCaptured: 0 };
+  $("guided-panel").classList.remove("hidden");
+  updateGuidedUI();
+  // arm() handles inEvent / belowSince / lastEventEnd resets so events
+  // captured before guided mode don't leak into the new session.
+  if (!state.armed) await arm();
+  setStatus(`guided · ${state.currentSwitch} · phase 1 of ${GUIDED_PHASES.length}`);
+}
+
+function advanceGuidedPhase() {
+  if (!state.guided) return;
+  state.guided.phaseIdx++;
+  state.guided.capturedInPhase = 0;
+  if (state.guided.phaseIdx >= GUIDED_PHASES.length) {
+    finishGuided(false);
+    return;
+  }
+  updateGuidedUI();
+  const phase = GUIDED_PHASES[state.guided.phaseIdx];
+  setStatus(`next: ${phase.label}`);
+}
+
+function skipGuidedPhase() {
+  if (!state.guided) return;
+  advanceGuidedPhase();
+}
+
+function cancelGuided() {
+  if (!state.guided) return;
+  finishGuided(true);
+}
+
+function finishGuided(cancelled) {
+  const total = state.guided ? state.guided.totalCaptured : 0;
+  state.guided = null;
+  $("guided-panel").classList.add("hidden");
+  if (state.armed) disarm();
+  if (cancelled) {
+    setStatus(`guided cancelled · ${total} sample${total === 1 ? "" : "s"} kept`);
+  } else {
+    setStatus(`guided complete · ${total} samples captured`);
+  }
+}
+
+function updateGuidedUI() {
+  if (!state.guided) return;
+  const idx = state.guided.phaseIdx;
+  const phase = GUIDED_PHASES[idx];
+  if (!phase) return;
+  $("guided-phase-num").textContent =
+    `phase ${idx + 1} of ${GUIDED_PHASES.length}`;
+  $("guided-label").textContent = phase.label;
+  $("guided-hint").textContent = phase.hint;
+  // dots: filled for captured, empty for remaining. "●●●○○ — 3 of 5"
+  const got = state.guided.capturedInPhase;
+  const need = phase.count;
+  const dots = "●".repeat(got) + "○".repeat(Math.max(0, need - got));
+  $("guided-counter").textContent = `${dots}   ${got} of ${need}`;
+}
+
 async function finalizeEvent(startAbs, endAbs) {
   const sw = state.currentSwitch;
   if (!sw || !state.storageHandle) return;
   const pcm = readRingRange(startAbs, endAbs);
-  if (pcm.length < state.sampleRate * 0.01) return;   // < 10 ms = noise
-  const wav = encodeWav(pcm, state.sampleRate);
+  const sr = state.sampleRate;
+  if (pcm.length < sr * 0.012) return;   // <12 ms = debounce / noise
+
+  // Concept-membership check. A keyswitch press has a fast attack and a
+  // sharp peak-to-RMS ratio; sustained ambient noise (voice, HVAC, fan
+  // ramp, traffic, distant conversation) has a slow envelope and low
+  // crest factor. Reject anything that doesn't share the CCD of a press
+  // before it's written to disk — these would otherwise pollute the
+  // fingerprint average.
+  //
+  // During a guided session we *know* a press is happening (the user is
+  // following a prompt within a listening window) so we trust the
+  // structural context and skip the gate. Stray ambient noise during
+  // guided capture still gets through, but it's labeled with its phase
+  // and the user can review/delete from the sample grid.
+  let peak = 0, peakIdx = 0, sumSq = 0;
+  for (let i = 0; i < pcm.length; i++) {
+    const v = pcm[i] < 0 ? -pcm[i] : pcm[i];
+    if (v > peak) { peak = v; peakIdx = i; }
+    sumSq += pcm[i] * pcm[i];
+  }
+  const rms = Math.sqrt(sumSq / pcm.length);
+  const crest = peak / Math.max(rms, 1e-9);
+
+  // Attack is measured from the *onset* (first sample crossing 20 % of
+  // peak) to the peak — NOT from buffer-start, which would mistakenly
+  // include the preroll silence and reject every real press.
+  const onsetThr = peak * 0.20;
+  let onsetIdx = 0;
+  for (let i = 0; i < pcm.length; i++) {
+    if ((pcm[i] < 0 ? -pcm[i] : pcm[i]) >= onsetThr) { onsetIdx = i; break; }
+  }
+  const attackMs = ((peakIdx - onsetIdx) / sr) * 1000;
+
+  if (!state.guided) {
+    const rejectReason =
+      (attackMs > 25)                ? `slow attack (${attackMs.toFixed(0)} ms)` :
+      (crest < 2.2 && peak < 0.15)   ? `low crest (${crest.toFixed(1)})` :
+      null;
+    if (rejectReason) {
+      setStatus(`rejected — ${rejectReason}`);
+      return;
+    }
+  }
+
+  // Filename prefix when in a guided session — phase id sorts samples
+  // by phase when the directory is listed alphabetically.
+  let prefix = null;
+  if (state.guided) {
+    const phase = GUIDED_PHASES[state.guided.phaseIdx];
+    const phaseNum = String(state.guided.phaseIdx + 1).padStart(2, "0");
+    prefix = `${phaseNum}-${phase.id}`;
+  }
+
+  const wav = encodeWav(pcm, sr);
   try {
-    await fsSaveSample(sw, wav);
+    await fsSaveSample(sw, wav, prefix);
     state.sessionCount++;
     $("session-count").textContent = String(state.sessionCount);
+    if (state.guided) {
+      state.guided.capturedInPhase++;
+      state.guided.totalCaptured++;
+      updateGuidedUI();
+      const target = GUIDED_PHASES[state.guided.phaseIdx].count;
+      if (state.guided.capturedInPhase >= target) {
+        advanceGuidedPhase();
+      }
+    }
     await refreshSwitches();
     if (sw === state.currentSwitch) await loadSwitchSamples(sw);
   } catch (e) {
@@ -773,10 +995,26 @@ function detectSubEventsInSample(ch, peak, sr) {
 // ~-92 dB (vs Hann's ~-32 dB) so resonant peaks stand out against a
 // genuinely quiet floor instead of getting buried under window leakage.
 function computeSwitchProfile(name) {
-  const samples = state.switchSamples.filter(
+  const all = state.switchSamples.filter(
     (t) => t.meta && t.switch === name
   );
+  if (!all.length) return null;
+
+  // Outlier rejection. Measurements omitted ≠ measurements nonexistent:
+  // each sample's peak amplitude is retained in meta, so we can verify
+  // concept-membership before averaging into the fingerprint. Reject
+  // samples whose peak is far from the median — those are likely false
+  // triggers, contaminated recordings, or accidental double-strikes.
+  // Keep the band [median/4, median·4] which spans the natural range
+  // of soft → hard taps on the same switch (well over 12 dB).
+  const peaks = all.map((t) => t.meta.peak).sort((a, b) => a - b);
+  const median = peaks[Math.floor(peaks.length / 2)];
+  const samples = all.filter(
+    (t) => t.meta.peak >= median / 4 && t.meta.peak <= median * 4
+  );
+  const rejected = all.length - samples.length;
   if (!samples.length) return null;
+
   const N = FFT_N;
   const re = new Float64Array(N), im = new Float64Array(N);
   const sumMag = new Float64Array(N / 2);
@@ -784,10 +1022,10 @@ function computeSwitchProfile(name) {
   const win = getWindow(state.fft.window, N);
   for (const t of samples) {
     const ch = t.meta.buf.getChannelData(0);
-    let centerIdx = 0, peak = 0;
+    let centerIdx = 0, p = 0;
     for (let i = 0; i < ch.length; i++) {
       const v = ch[i] < 0 ? -ch[i] : ch[i];
-      if (v > peak) { peak = v; centerIdx = i; }
+      if (v > p) { p = v; centerIdx = i; }
     }
     let start = Math.max(0, centerIdx - N / 2);
     if (start + N > ch.length) start = Math.max(0, ch.length - N);
@@ -803,8 +1041,12 @@ function computeSwitchProfile(name) {
   }
   for (let i = 0; i < sumMag.length; i++) sumMag[i] /= samples.length;
   const smoothed = smoothLogFreq(sumMag, sr, 1 / 48);
-  const peaks = findSpectralPeaks(smoothed, sr, 6);
-  return { spectrum: smoothed, sr, count: samples.length, peaks };
+  const spectralPeaks = findSpectralPeaks(smoothed, sr, 6);
+  return {
+    spectrum: smoothed, sr,
+    count: samples.length, rejected,
+    peaks: spectralPeaks,
+  };
 }
 
 // FFT windows. Cached by (name, N).
@@ -1467,12 +1709,14 @@ async function startTyping() {
   let nextTime = state.audioCtx.currentTime + 0.05;
   let prevCh = null;
   // Amplitude target drifts as a slow random walk in [0..1], biased by
-  // rhythm: rolls go softer, spaces / pauses go heavier. We then pick a
-  // sample whose percentile of peak-amplitude sits near the target. This
-  // gives the typist "moods" of softer + louder stretches instead of
-  // uniformly-random force per keystroke.
+  // rhythm: rolls go softer, spaces / pauses go heavier. The amp target
+  // drives BOTH the sample-percentile pick (force represented by which
+  // recording we play) AND the playback gain (force represented by how
+  // loudly we play it). That double-coupling is what makes the dynamics
+  // read as "a person typing" instead of "samples firing."
   let ampTarget = 0.5;
-  const mode = ($("typist-mode") && $("typist-mode").value) || "words";
+  state.typingRecentIdx.length = 0;
+  const mode = ($("typist-mode") && $("typist-mode").value) || "passages";
   const stream = makeTextStream(mode);
 
   try {
@@ -1481,21 +1725,66 @@ async function startTyping() {
         poolName = state.typingSwitch;
         $("typist-status").textContent = "typing · " + poolName;
         pool = await loadPoolForSwitch(poolName);
+        state.typingRecentIdx.length = 0;
       }
       if (!pool.length) { await sleep(150); continue; }
 
       const ch = stream.next();
       const N = pool.length;
+
+      // Pick by amplitude percentile, then walk away from any of the last
+      // few choices so the same WAV doesn't repeat back-to-back — the
+      // single most audible "fake" cue if left alone.
       const jitter = (Math.random() - 0.5) * 0.18;
-      const idx = clamp(Math.floor((ampTarget + jitter) * N), 0, N - 1);
+      let idx = clamp(Math.floor((ampTarget + jitter) * N), 0, N - 1);
+      if (N > 2) {
+        const recent = state.typingRecentIdx;
+        for (let off = 0; off < N; off++) {
+          const candidates = off === 0 ? [idx] : [idx + off, idx - off];
+          let picked = null;
+          for (const c of candidates) {
+            if (c >= 0 && c < N && !recent.includes(c)) { picked = c; break; }
+          }
+          if (picked != null) { idx = picked; break; }
+        }
+        recent.push(idx);
+        const memory = Math.min(3, Math.floor(N / 2));
+        while (recent.length > memory) recent.shift();
+      }
       const t = pool[idx];
 
       if (nextTime < state.audioCtx.currentTime) {
         nextTime = state.audioCtx.currentTime + 0.005;
       }
+
+      // Per-stroke audio graph: source → gain (velocity) → pan (spatial)
+      // → destination. The graph is rebuilt every keystroke; modern Web
+      // Audio handles thousands of these per second without GC stutter
+      // because each node is released as soon as its source ends.
       const src = state.audioCtx.createBufferSource();
       src.buffer = t.meta.buf;
-      src.connect(state.audioCtx.destination);
+      // Pitch micro-jitter: ±0.6 % ≈ ±10 cents. Real switches vary press
+      // to press because the slider sits slightly differently in the
+      // housing each time. Without this, even with sample rotation the
+      // ear can hear a "perfectly in tune" repetition.
+      src.playbackRate.value = 1 + (Math.random() - 0.5) * 0.012;
+
+      // Velocity gain. Soft strokes ride at ~0.55, hard at ~1.05. Space
+      // gets a small boost — spacebars are physically larger and
+      // perceptually louder.
+      const gain = state.audioCtx.createGain();
+      let velGain = 0.55 + ampTarget * 0.5;
+      if (ch === " ") velGain *= 1.15;
+      gain.gain.value = velGain;
+
+      // Stereo pan from a rough QWERTY position model: left half of the
+      // keyboard pans left, right half pans right. The cue is subtle
+      // (max ±0.6) but it's a strong subconscious signal that lifts
+      // realism a lot — typing on a real board is never a point source.
+      const pan = state.audioCtx.createStereoPanner();
+      pan.pan.value = panForChar(ch);
+
+      src.connect(gain).connect(pan).connect(state.audioCtx.destination);
       src.start(nextTime);
 
       schedulePulse(nextTime, poolName, t.meta.mini, ch);
@@ -1564,6 +1853,23 @@ function gaussianStd() {
   return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
 }
 
+// Rough QWERTY pan model. Letters on the left hand pan left, right hand
+// right; space pans near center. The mapping doesn't have to be physically
+// accurate — a soft, consistent left/right bias is enough for the brain
+// to register "this is happening across a keyboard, not a single point."
+const _PAN_LEFT  = "qwertasdfgzxcvb12345";
+const _PAN_RIGHT = "yuiophjklnm67890";
+function panForChar(ch) {
+  if (ch == null) return (Math.random() - 0.5) * 0.4;
+  const c = ch.toLowerCase();
+  if (c === " ") return (Math.random() - 0.5) * 0.15;
+  const li = _PAN_LEFT.indexOf(c);
+  if (li >= 0) return clamp(-0.6 + (li / _PAN_LEFT.length) * 0.4 + (Math.random() - 0.5) * 0.1, -0.7, 0.7);
+  const ri = _PAN_RIGHT.indexOf(c);
+  if (ri >= 0) return clamp( 0.2 + (ri / _PAN_RIGHT.length) * 0.4 + (Math.random() - 0.5) * 0.1, -0.7, 0.7);
+  return (Math.random() - 0.5) * 0.5;
+}
+
 // Top English digraphs that roll fast on QWERTY because of finger
 // alternation or natural sequencing. Hitting one drops the next
 // inter-keystroke interval to ~70 % of the gaussian mean — the same
@@ -1611,13 +1917,93 @@ const QUOTES = [
   "what we know is a drop what we dont know is an ocean",
 ];
 
+// Famous opening passages — the default typist material. Long enough that
+// at 100 wpm each passage is one to three minutes of typing (giving you
+// time to actually listen to the switch), recognizable enough that you
+// know what you're hearing, and varied enough in vocabulary that the
+// digraph distribution covers most of the keyboard. All lowercase, ASCII
+// punctuation only — what the typist will literally type, key by key.
+const PASSAGES = [
+  // Jane Austen, Pride and Prejudice
+  "it is a truth universally acknowledged, that a single man in possession " +
+  "of a good fortune, must be in want of a wife. however little known the " +
+  "feelings or views of such a man may be on his first entering a " +
+  "neighbourhood, this truth is so well fixed in the minds of the " +
+  "surrounding families, that he is considered the rightful property of " +
+  "some one or other of their daughters.",
+
+  // Charles Dickens, A Tale of Two Cities
+  "it was the best of times, it was the worst of times, it was the age of " +
+  "wisdom, it was the age of foolishness, it was the epoch of belief, it " +
+  "was the epoch of incredulity, it was the season of light, it was the " +
+  "season of darkness, it was the spring of hope, it was the winter of " +
+  "despair, we had everything before us, we had nothing before us.",
+
+  // Herman Melville, Moby-Dick
+  "call me ishmael. some years ago, never mind how long precisely, having " +
+  "little or no money in my purse, and nothing particular to interest me " +
+  "on shore, i thought i would sail about a little and see the watery " +
+  "part of the world. it is a way i have of driving off the spleen and " +
+  "regulating the circulation.",
+
+  // George Orwell, 1984
+  "it was a bright cold day in april, and the clocks were striking " +
+  "thirteen. winston smith, his chin nuzzled into his breast in an effort " +
+  "to escape the vile wind, slipped quickly through the glass doors of " +
+  "victory mansions, though not quickly enough to prevent a swirl of " +
+  "gritty dust from entering along with him.",
+
+  // F. Scott Fitzgerald, The Great Gatsby
+  "in my younger and more vulnerable years my father gave me some advice " +
+  "that i have been turning over in my mind ever since. whenever you feel " +
+  "like criticizing anyone, he told me, just remember that all the people " +
+  "in this world have not had the advantages that you have had.",
+
+  // Abraham Lincoln, Gettysburg Address
+  "four score and seven years ago our fathers brought forth on this " +
+  "continent, a new nation, conceived in liberty, and dedicated to the " +
+  "proposition that all men are created equal. now we are engaged in a " +
+  "great civil war, testing whether that nation, or any nation so " +
+  "conceived and so dedicated, can long endure.",
+
+  // William Shakespeare, Hamlet
+  "to be, or not to be, that is the question: whether tis nobler in the " +
+  "mind to suffer the slings and arrows of outrageous fortune, or to take " +
+  "arms against a sea of troubles, and by opposing end them. to die, to " +
+  "sleep, no more; and by a sleep, to say we end the heart-ache and the " +
+  "thousand natural shocks that flesh is heir to.",
+
+  // Leo Tolstoy, Anna Karenina
+  "happy families are all alike; every unhappy family is unhappy in its " +
+  "own way. everything was in confusion in the oblonskys house. the wife " +
+  "had discovered that the husband was carrying on an intrigue with the " +
+  "french girl who had been a governess in their family, and she had " +
+  "announced that she could not go on living in the same house with him.",
+
+  // Marcus Aurelius, Meditations
+  "you have power over your mind, not outside events. realize this, and " +
+  "you will find strength. waste no more time arguing about what a good " +
+  "man should be. be one. when you arise in the morning, think of what a " +
+  "precious privilege it is to be alive, to breathe, to think, to enjoy, " +
+  "to love.",
+
+  // Robert Frost, The Road Not Taken
+  "two roads diverged in a yellow wood, and sorry i could not travel both " +
+  "and be one traveler, long i stood and looked down one as far as i " +
+  "could to where it bent in the undergrowth. then took the other, as " +
+  "just as fair, and having perhaps the better claim, because it was " +
+  "grassy and wanted wear.",
+];
+
 // returns { next() → char | null } — `null` means random (no char to type)
 function makeTextStream(mode) {
   if (mode === "random") return { next: () => null };
   let pending = "";
   let cycleIdx = 0;
   function refill() {
-    if (mode === "words") {
+    if (mode === "passages") {
+      pending += PASSAGES[cycleIdx++ % PASSAGES.length] + "  ·  ";
+    } else if (mode === "words") {
       const n = 4 + Math.floor(Math.random() * 5);
       const w = [];
       for (let i = 0; i < n; i++) {
@@ -2187,22 +2573,27 @@ function wire() {
   });
   $("new-switch-cancel").addEventListener("click", () => $("new-switch-dialog").close("cancel"));
   $("new-switch-dialog").addEventListener("close", async () => {
-    const d = $("new-switch-dialog");
-    if (d.returnValue !== "ok") return;
-    const name = $("new-switch-name").value.trim();
-    if (!name) return;
-    if (!/^[A-Za-z0-9._-]+$/.test(name)) {
-      alert("invalid name — use letters, digits, dot, dash, underscore");
-      return;
+    try {
+      const d = $("new-switch-dialog");
+      if (d.returnValue !== "ok") return;
+      const name = $("new-switch-name").value.trim();
+      if (!name) return;
+      if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+        alert("invalid name — use letters, digits, dot, dash, underscore");
+        return;
+      }
+      if (!state.switches.find((s) => s.name === name)) {
+        state.switches.push({ name, samples: [], count: 0 });
+        state.switches.sort((a, b) => a.name.localeCompare(b.name));
+      }
+      state.currentSwitch = name;
+      renderSwitchRow();
+      updateTypingButtons();
+      await loadSwitchSamples(name);
+    } catch (e) {
+      console.error("new-switch failed", e);
+      setStatus("new-switch failed: " + e.message);
     }
-    if (!state.switches.find((s) => s.name === name)) {
-      state.switches.push({ name, samples: [], count: 0 });
-      state.switches.sort((a, b) => a.name.localeCompare(b.name));
-    }
-    state.currentSwitch = name;
-    renderSwitchRow();
-    updateTypingButtons();
-    await loadSwitchSamples(name);
   });
 
   $("order").addEventListener("change", () => renderTiles());
@@ -2239,6 +2630,15 @@ function wire() {
     await refreshSwitches();
     if (state.currentSwitch) await loadSwitchSamples(state.currentSwitch);
   };
+
+  $("guided-btn").addEventListener("click", () => {
+    startGuided().catch((e) => {
+      console.error("guided failed", e);
+      setStatus("guided failed: " + e.message);
+    });
+  });
+  $("guided-cancel").addEventListener("click", cancelGuided);
+  $("guided-skip").addEventListener("click", skipGuidedPhase);
 
   $("storage-btn").addEventListener("click", () => showStorageGate(state.storageName));
   $("storage-pick").addEventListener("click", () => {
@@ -2285,8 +2685,6 @@ async function init() {
   wire();
   if ($("fp-window")) $("fp-window").value = state.fft.window;
   if ($("fp-scale"))  $("fp-scale").value  = state.fft.scale;
-  $("meta-tail").textContent = String(state.tailMs);
-  $("meta-gap").textContent  = String(state.gapMs);
   renderScope();
   drawTypingViz();
   drawTypingText();
@@ -2323,4 +2721,7 @@ async function init() {
   }
 }
 
-init();
+init().catch((e) => {
+  console.error("init failed", e);
+  setStatus("init failed — see console");
+});

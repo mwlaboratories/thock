@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Major+Mono+Display&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%226%22%20fill%3D%22%230a0a0c%22/%3E%3Ctext%20x%3D%2216%22%20y%3D%2222%22%20text-anchor%3D%22middle%22%20font-family%3D%22monospace%22%20font-size%3D%2218%22%20fill%3D%22%23f5a623%22%3Et%3C/text%3E%3C/svg%3E" />
 <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -57,9 +58,26 @@
 
     <div class="capture-actions">
       <button id="primary" class="action primary">enable mic</button>
+      <button id="guided-btn" class="action ghost">guided session</button>
     </div>
 
-    <p class="hint">click <strong>start</strong> to arm. each keypress above the noise floor is written to disk as a WAV. press as many as you like, varying speed and force. click <strong>stop</strong> when done.</p>
+    <div id="guided-panel" class="guided-panel hidden">
+      <div class="guided-head">
+        <span class="guided-title">guided recording</span>
+        <span class="guided-phase-num" id="guided-phase-num">phase 1 of 4</span>
+      </div>
+      <div class="guided-prompt">
+        <strong class="guided-label" id="guided-label">5 light · slow</strong>
+        <span class="guided-hint" id="guided-hint">barely there — full key travel, slow as a daydream</span>
+      </div>
+      <div class="guided-counter" id="guided-counter">○○○○○   0 of 5</div>
+      <div class="guided-controls">
+        <button id="guided-skip" class="action small ghost">skip phase</button>
+        <button id="guided-cancel" class="action small ghost danger">cancel</button>
+      </div>
+    </div>
+
+    <p class="hint"><strong>guided session</strong> walks you through a structured set of presses (light/firm × slow/fast). For freeform capture, click <strong>enable mic</strong>, then <strong>arm</strong>, then press the key.</p>
 
     <dl class="capture-meta">
       <div><dt>saved this session</dt><dd id="session-count">0</dd></div>
@@ -148,6 +166,7 @@
       <label class="param">wpm <input type="number" id="wpm" value="100" min="20" max="240" /></label>
       <label class="param">mode
         <select id="typist-mode" class="mini-select">
+          <option value="passages">passages</option>
           <option value="words">words</option>
           <option value="quotes">quotes</option>
           <option value="pangrams">pangrams</option>
