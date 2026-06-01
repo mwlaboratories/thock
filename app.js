@@ -283,7 +283,7 @@ const state = {
   //                    transient (which crosses threshold mid-batch) is
   //                    not clipped.
   wavefrontTailMs: 35,
-  dwellWindowMs: 250,
+  dwellWindowMs: 350,
   gapMs: 25,
   prerollMs: 50,
 
@@ -294,6 +294,7 @@ const state = {
 
   // --- arm/segmentation runtime (the trigger that writes WAVs as you press) ---
   armed: false,
+  armCountdown: 0,
   inEvent: false, eventStartAbs: 0, belowSinceAbs: -1, lastEventEndAbs: -1,
   sessionCount: 0,
 
@@ -399,7 +400,20 @@ function setSwitchDwell(name, ms) {
 function loadSwitchDwells() {
   try {
     const raw = localStorage.getItem("thock.dwells");
-    if (raw) state.switchDwells = new Map(JSON.parse(raw));
+    if (!raw) return;
+    state.switchDwells = new Map(JSON.parse(raw));
+    // Migration: an earlier calibration formula measured the silent
+    // gap (release.startAbs - press.endAbs) which biased dwells
+    // ~50–90 ms low and pinned them at the old 80 ms clamp floor.
+    // Bring any value below 200 up to the current default so existing
+    // switches recover without forcing the user to re-calibrate.
+    let migrated = false;
+    for (const [k, v] of state.switchDwells) {
+      if (v < 200) { state.switchDwells.set(k, 200); migrated = true; }
+    }
+    if (migrated) {
+      localStorage.setItem("thock.dwells", JSON.stringify([...state.switchDwells]));
+    }
   } catch (_) { /* malformed → start fresh */ }
 }
 
@@ -512,7 +526,7 @@ async function enableMic() {
 
   setStatus(`mic on · ${ctx.sampleRate} Hz`);
   $("capture-status").textContent = "disarmed";
-  setPrimary("arm");
+  refreshPrimary();
   if (state.currentSwitch) await loadSwitchSamples(state.currentSwitch);
 }
 
@@ -703,11 +717,31 @@ async function arm() {
   state.inEvent = false;
   state.belowSinceAbs = -1;
   state.lastEventEndAbs = -1;
+  // Suppress capture during the 3-2-1 countdown so the click that hit
+  // "▶ start" can't be wavefront #1. The pre-arm countdown matches the
+  // guided one — every mic-listening session begins with a ready beat.
+  state.armCountdown = 3;
   $("session-count").textContent = "0";
-  setPrimary("armed");
-  $("capture-status").textContent = "armed";
+  refreshPrimary();
+  $("capture-status").textContent = `ready in ${state.armCountdown}…`;
   $("capture-status").classList.add("armed");
-  setStatus(`armed · ${state.currentSwitch}`);
+  setStatus(`ready in ${state.armCountdown}…`);
+  const tick = () => {
+    if (!state.armed) return;  // user already cancelled
+    state.armCountdown--;
+    if (state.armCountdown > 0) {
+      $("capture-status").textContent = `ready in ${state.armCountdown}…`;
+      setStatus(`ready in ${state.armCountdown}…`);
+      setTimeout(tick, 1000);
+    } else {
+      state.armCountdown = 0;
+      // discard any wavefront the mouseclick produced during countdown
+      _clearPendingFlush();
+      $("capture-status").textContent = "armed";
+      setStatus(`armed · ${state.currentSwitch}`);
+    }
+  };
+  setTimeout(tick, 1000);
 }
 
 function disarm() {
@@ -717,7 +751,7 @@ function disarm() {
   // any wavefront still buffered for pairing gets saved alone now —
   // don't leave a press cycle floating in memory.
   flushPendingWavefront();
-  setPrimary("arm");
+  refreshPrimary();
   $("capture-status").textContent = "ready";
   $("capture-status").classList.remove("armed");
   setStatus(`saved ${state.sessionCount} sample${state.sessionCount === 1 ? "" : "s"}`);
@@ -854,7 +888,7 @@ function advanceGuidedPhase() {
   state.guided.cyclesInPhase = 0;
   state.guided.wavefrontInCycle = 0;
   state.guided.cycleCooldownUntil = 0;
-  state.guided.lastPressEndAbs = null;
+  state.guided.lastPressStartAbs = null;
   if (state.guided.phaseIdx >= GUIDED_PHASES.length) {
     finishGuided(false);
     return;
@@ -935,7 +969,7 @@ async function finishGuided(cancelled) {
       .sort((a, b) => a - b);
     if (naturalGaps.length >= 2) {
       const median = naturalGaps[Math.floor(naturalGaps.length / 2)];
-      const calibrated = clamp(Math.round((median + 50) / 10) * 10, 80, 500);
+      const calibrated = clamp(Math.round((median + 50) / 10) * 10, 200, 500);
       setSwitchDwell(sw, calibrated);
       calibratedMsg = ` · dwell ${calibrated} ms`;
     }
@@ -967,6 +1001,8 @@ async function finishGuided(cancelled) {
   state.guided = null;
   $("guided-modal").classList.add("hidden");
   if (state.armed) disarm();
+  // template may have just been written — flip primary button to "▶ start"
+  refreshPrimary();
   if (cancelled) {
     setStatus(`guided cancelled · ${total} sample${total === 1 ? "" : "s"} kept`);
   } else {
@@ -1046,6 +1082,8 @@ function emitWavefront(startAbs, endAbs) {
   // During a guided phase's "ready" countdown, ignore everything — the
   // mouseclick that started the session shouldn't get recorded.
   if (state.guided && !state.guided.listening) return;
+  // Same for the free-form arm 3-2-1 countdown.
+  if (!state.guided && state.armCountdown > 0) return;
   const sr = state.sampleRate;
   if (endAbs - startAbs < sr * 0.012) return;  // <12 ms = debounce
 
@@ -1087,9 +1125,14 @@ function emitWavefront(startAbs, endAbs) {
 
   const dwellWindow = dwellWindowForCurrent();
   if (state.pendingWavefront) {
-    const gapSamples = startAbs - state.pendingWavefront.endAbs;
-    const gapMs = (gapSamples / sr) * 1000;
-    if (gapMs <= dwellWindow) {
+    // Cycle length measured start-to-start. The endAbs of the pending
+    // wavefront already includes the 35 ms wavefront-tail, so using
+    // pendingW.endAbs would understate the actual press-to-release
+    // cycle by ~50–90 ms — and that's the bug that was producing
+    // single-wavefront WAVs even when paired captures were intended.
+    const cycleSamples = startAbs - state.pendingWavefront.startAbs;
+    const cycleMs = (cycleSamples / sr) * 1000;
+    if (cycleMs <= dwellWindow) {
       const pendingW = state.pendingWavefront;
       _clearPendingFlush();
       saveCycle(pendingW.startAbs, endAbs, "pair");
@@ -1134,14 +1177,17 @@ function handleGuidedWavefront(startAbs, endAbs, peak, attackMs, durationMs) {
   const label = phase.captures[slotIdx];
   const isPress = slotIdx === 0;
 
-  // Record the dwell when we see the release of a cycle that captured
-  // the press too — gives us dwell calibration across long-hold and
-  // natural-speed phases.
-  if (!isPress && g.lastPressEndAbs != null) {
-    const gapMs = ((startAbs - g.lastPressEndAbs) / state.sampleRate) * 1000;
-    g.observedDwells.push({ phase: phase.id, gapMs });
+  // Record the dwell when we see the release of a cycle whose press
+  // we just registered. Measured start-to-start: that's the full
+  // press-to-release cycle the user perceives. Measuring end-to-start
+  // would lose the wavefront-tail time and produce dwells biased
+  // ~50 ms low — exactly the bug that made the natural-speed calibration
+  // hit the clamp floor and silently break free-form pairing.
+  if (!isPress && g.lastPressStartAbs != null) {
+    const cycleMs = ((startAbs - g.lastPressStartAbs) / state.sampleRate) * 1000;
+    g.observedDwells.push({ phase: phase.id, gapMs: cycleMs });
   }
-  if (isPress) g.lastPressEndAbs = endAbs;
+  if (isPress) g.lastPressStartAbs = startAbs;
 
   if (label) {
     g.observations.push({ phase: phase.id, label, peak, attackMs, durationMs });
@@ -1156,7 +1202,7 @@ function handleGuidedWavefront(startAbs, endAbs, peak, attackMs, durationMs) {
   if (g.wavefrontInCycle >= phase.captures.length) {
     g.wavefrontInCycle = 0;
     g.cyclesInPhase++;
-    g.lastPressEndAbs = null;
+    g.lastPressStartAbs = null;
     g.cycleCooldownUntil = now + 800;
     updateGuidedUI();
     if (g.cyclesInPhase >= phase.cycles) {
@@ -1269,6 +1315,8 @@ async function selectSwitch(name) {
   state.typingSwitch = name;
   renderSwitchRow();
   updateTypingButtons();
+  // primary button reflects "calibrated yet?" — flip to calibrate-or-arm
+  refreshPrimary();
   if ($("meta-switch")) $("meta-switch").textContent = name;
   setStatus(`switch · ${name}`);
   await loadSwitchSamples(name);
@@ -2609,9 +2657,37 @@ function setStatus(s) { $("status-text").textContent = s; }
 function setPrimary(mode) {
   const b = $("primary");
   b.classList.remove("armed", "busy");
-  if (mode === "enable")     b.textContent = "enable mic";
-  else if (mode === "arm")   b.textContent = "▶ start";
-  else if (mode === "armed") { b.textContent = "■ stop"; b.classList.add("armed"); }
+  if (mode === "enable")         b.textContent = "enable mic";
+  else if (mode === "calibrate") b.textContent = "▶ calibrate switch";
+  else if (mode === "arm")       b.textContent = "▶ start";
+  else if (mode === "armed")     { b.textContent = "■ stop"; b.classList.add("armed"); }
+}
+
+// The primary button is a chameleon — its action depends on what the
+// user still needs to do. Calibration is the precondition for freeform
+// capture: without a learned template we don't know what a press of
+// this switch sounds like, so triggering on broadband peaks alone is
+// guesswork. Walk the prerequisites in order.
+function currentPrimaryMode() {
+  if (state.armed) return "armed";
+  if (!state.audioCtx || !state.stream) return "enable";
+  // no switch selected → arm() will alert and tell them to make one;
+  // we still show "enable mic" as the next visible action.
+  if (!state.currentSwitch) return "enable";
+  if (!state.switchTemplates.has(state.currentSwitch)) return "calibrate";
+  return "arm";
+}
+
+function refreshPrimary() {
+  setPrimary(currentPrimaryMode());
+  const recal = $("guided-btn");
+  if (!recal) return;
+  if (state.currentSwitch && state.switchTemplates.has(state.currentSwitch)) {
+    recal.classList.remove("hidden");
+    recal.textContent = "re-calibrate";
+  } else {
+    recal.classList.add("hidden");
+  }
 }
 
 function renderScope() {
@@ -2995,13 +3071,22 @@ async function deleteAllInSwitch() {
 
 function wire() {
   $("primary").addEventListener("click", async () => {
-    if (!state.audioCtx || !state.stream) {
+    const mode = currentPrimaryMode();
+    if (mode === "enable") {
       try { await enableMic(); }
       catch (e) { console.error(e); setStatus("mic error: " + e.message); }
       return;
     }
-    if (state.armed) disarm();
-    else arm().catch((e) => { console.error(e); setStatus("arm error: " + e.message); });
+    if (mode === "calibrate") {
+      if (!state.currentSwitch) { alert("create or select a switch first"); return; }
+      startGuided().catch((e) => { console.error(e); setStatus("calibrate failed: " + e.message); });
+      return;
+    }
+    if (mode === "armed") {
+      disarm();
+      return;
+    }
+    arm().catch((e) => { console.error(e); setStatus("arm error: " + e.message); });
   });
 
   $("new-switch").addEventListener("click", () => {
@@ -3128,6 +3213,7 @@ async function init() {
   loadSwitchTemplates();
   loadFftSettings();
   wire();
+  refreshPrimary();
   if ($("fp-window")) $("fp-window").value = state.fft.window;
   if ($("fp-scale"))  $("fp-scale").value  = state.fft.scale;
   renderScope();
