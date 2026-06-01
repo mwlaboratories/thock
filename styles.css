@@ -374,9 +374,13 @@ canvas {
 .guided-card h3 {
   margin: 0;
   font-family: "Major Mono Display", ui-monospace, monospace;
-  font-size: 1.15rem;
+  font-size: 1.05rem;
   color: var(--accent);
   letter-spacing: 0.06em;
+}
+.guided-card h3 #guided-card-switch {
+  color: var(--ink);
+  letter-spacing: 0.02em;
 }
 .guided-card .guided-phase-num {
   color: var(--ink-mute);
@@ -385,40 +389,96 @@ canvas {
   text-transform: uppercase;
   font-variant-numeric: tabular-nums;
 }
-.guided-card-switch {
-  color: var(--ink-dim);
-  font-size: 0.72rem;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  margin-bottom: 22px;
+
+/* the big action stage — what to do right now, written huge */
+.guided-stage {
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  padding: 24px 16px 18px;
+  margin: 18px 0 14px;
+  transition: border-color 0.18s ease, background 0.18s ease;
 }
-.guided-card-label {
-  color: var(--ink);
-  font-size: 1.6rem;
+.guided-stage-icon {
+  font-size: 4.5rem;
+  line-height: 1;
+  color: var(--ink-dim);
+  margin-bottom: 6px;
+  transition: color 0.18s ease, transform 0.18s ease;
+}
+.guided-stage-label {
+  font-size: 1.5rem;
   font-weight: 500;
   letter-spacing: 0.02em;
-  margin-bottom: 6px;
+  color: var(--ink);
+  margin-bottom: 2px;
 }
-.guided-card-hint {
+.guided-stage-sub {
+  font-size: 0.82rem;
+  color: var(--ink-dim);
+  min-height: 1.1em;
+}
+.guided-stage[data-step="press"] {
+  border-color: var(--accent);
+  background: rgba(245, 166, 35, 0.06);
+}
+.guided-stage[data-step="press"] .guided-stage-icon,
+.guided-stage[data-step="press"] .guided-stage-label {
+  color: var(--accent);
+}
+.guided-stage[data-step="hold"] {
+  border-color: var(--line-2);
+}
+.guided-stage[data-step="hold"] .guided-stage-icon {
+  color: var(--ink);
+}
+.guided-stage[data-step="release"] {
+  border-color: #7dd87d;
+  background: rgba(125, 216, 125, 0.06);
+}
+.guided-stage[data-step="release"] .guided-stage-icon,
+.guided-stage[data-step="release"] .guided-stage-label {
+  color: #7dd87d;
+}
+.guided-stage[data-step="got"] {
+  border-color: #7dd87d;
+}
+.guided-stage[data-step="got"] .guided-stage-icon {
+  color: #7dd87d;
+  transform: scale(1.1);
+}
+.guided-stage[data-step="ready"] .guided-stage-icon {
+  color: var(--ink-mute);
+}
+
+.guided-card-phase {
+  margin-bottom: 12px;
+}
+.guided-card-label {
   color: var(--ink-dim);
   font-size: 0.95rem;
-  margin-bottom: 28px;
+  letter-spacing: 0.02em;
+  margin-bottom: 4px;
+}
+.guided-card-hint {
+  color: var(--ink-mute);
+  font-size: 0.8rem;
   line-height: 1.45;
 }
 .guided-card-counter {
-  font-size: 2.6rem;
+  font-size: 1.6rem;
   color: var(--accent);
-  letter-spacing: 0.22em;
+  letter-spacing: 0.18em;
   font-variant-numeric: tabular-nums;
-  padding: 8px 0 4px;
-  min-height: 3rem;
+  padding: 4px 0 2px;
+  min-height: 1.8rem;
 }
 .guided-card-status {
   color: var(--ink-mute);
-  font-size: 0.8rem;
-  letter-spacing: 0.12em;
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
   font-variant-numeric: tabular-nums;
 }
 .guided-card-learned {

@@ -717,17 +717,26 @@ async function arm() {
   state.inEvent = false;
   state.belowSinceAbs = -1;
   state.lastEventEndAbs = -1;
-  // Suppress capture during the 3-2-1 countdown so the click that hit
-  // "▶ start" can't be wavefront #1. The pre-arm countdown matches the
-  // guided one — every mic-listening session begins with a ready beat.
-  state.armCountdown = 3;
   $("session-count").textContent = "0";
   refreshPrimary();
-  $("capture-status").textContent = `ready in ${state.armCountdown}…`;
   $("capture-status").classList.add("armed");
+
+  // Guided mode manages its own per-phase countdown via state.guided —
+  // don't run a second one here.
+  if (state.guided) {
+    state.armCountdown = 0;
+    $("capture-status").textContent = "armed";
+    setStatus(`armed · ${state.currentSwitch}`);
+    return;
+  }
+
+  // Free-form arm: 3-2-1 countdown so the click that hit "▶ start"
+  // can't be wavefront #1.
+  state.armCountdown = 3;
+  $("capture-status").textContent = `ready in ${state.armCountdown}…`;
   setStatus(`ready in ${state.armCountdown}…`);
   const tick = () => {
-    if (!state.armed) return;  // user already cancelled
+    if (!state.armed) return;
     state.armCountdown--;
     if (state.armCountdown > 0) {
       $("capture-status").textContent = `ready in ${state.armCountdown}…`;
@@ -735,7 +744,6 @@ async function arm() {
       setTimeout(tick, 1000);
     } else {
       state.armCountdown = 0;
-      // discard any wavefront the mouseclick produced during countdown
       _clearPendingFlush();
       $("capture-status").textContent = "armed";
       setStatus(`armed · ${state.currentSwitch}`);
@@ -858,25 +866,96 @@ function beginPhaseCountdown() {
   if (!state.guided) return;
   state.guided.listening = false;
   state.guided.countdown = 3;
+  setStageCountdown(3);
   updateGuidedUI();
   const tick = () => {
     if (!state.guided) return;
     state.guided.countdown--;
     if (state.guided.countdown > 0) {
+      setStageCountdown(state.guided.countdown);
       updateGuidedUI();
       setTimeout(tick, 1000);
     } else {
-      // begin listening — discard any wavefront the user accidentally
-      // produced during the countdown (mouseclick, hand movement) so it
-      // can't pair with the first real press.
       _clearPendingFlush();
       state.guided.listening = true;
-      updateGuidedUI();
       const phase = GUIDED_PHASES[state.guided.phaseIdx];
-      setStatus(`guided · ${phase.label} · go`);
+      setStageForSlot(phase, 0);
+      updateGuidedUI();
+      setStatus(`guided · ${phase.label}`);
     }
   };
   setTimeout(tick, 1000);
+}
+
+// ----- visual stage helpers ----------------------------------------
+//
+// The big action panel inside the guided modal. setStageForSlot picks
+// the icon + label + color based on what the user should do RIGHT NOW
+// for the current phase × slot-in-cycle. setStageCaptured flashes a
+// green checkmark; setStageCooldown shows a quiet "wait" between
+// cycles; setStageCountdown shows the 3-2-1 ready beat.
+
+function setStageForSlot(phase, slotIdx) {
+  const el = $("guided-stage");
+  const icon = $("guided-stage-icon");
+  const lbl = $("guided-stage-label");
+  const sub = $("guided-stage-sub");
+  if (!el) return;
+  if (phase.id === "down-iso" && slotIdx === 0) {
+    el.dataset.step = "press"; icon.textContent = "▼";
+    lbl.textContent = "PRESS"; sub.textContent = "we only listen for the press";
+  } else if (phase.id === "down-iso" && slotIdx === 1) {
+    el.dataset.step = "ready"; icon.textContent = "·";
+    lbl.textContent = "release whenever"; sub.textContent = "we'll ignore the release sound";
+  } else if (phase.id === "up-iso" && slotIdx === 0) {
+    el.dataset.step = "hold"; icon.textContent = "▼";
+    lbl.textContent = "PRESS & HOLD"; sub.textContent = "we're waiting for the release";
+  } else if (phase.id === "up-iso" && slotIdx === 1) {
+    el.dataset.step = "release"; icon.textContent = "▲";
+    lbl.textContent = "RELEASE NOW"; sub.textContent = "the release is what we want";
+  } else if (phase.id === "long-hold" && slotIdx === 0) {
+    el.dataset.step = "press"; icon.textContent = "▼";
+    lbl.textContent = "PRESS & HOLD"; sub.textContent = "hold for about 1 second";
+  } else if (phase.id === "long-hold" && slotIdx === 1) {
+    el.dataset.step = "release"; icon.textContent = "▲";
+    lbl.textContent = "RELEASE"; sub.textContent = "";
+  } else if (phase.id === "natural" && slotIdx === 0) {
+    el.dataset.step = "press"; icon.textContent = "▼";
+    lbl.textContent = "PRESS"; sub.textContent = "";
+  } else if (phase.id === "natural" && slotIdx === 1) {
+    el.dataset.step = "release"; icon.textContent = "▲";
+    lbl.textContent = "RELEASE"; sub.textContent = "";
+  } else {
+    el.dataset.step = "ready"; icon.textContent = "⋯";
+    lbl.textContent = "…"; sub.textContent = "";
+  }
+}
+
+function setStageCaptured() {
+  const el = $("guided-stage");
+  if (!el) return;
+  el.dataset.step = "got";
+  $("guided-stage-icon").textContent = "✓";
+  $("guided-stage-label").textContent = "GOT IT";
+  $("guided-stage-sub").textContent = "";
+}
+
+function setStageCooldown() {
+  const el = $("guided-stage");
+  if (!el) return;
+  el.dataset.step = "ready";
+  $("guided-stage-icon").textContent = "⋯";
+  $("guided-stage-label").textContent = "WAIT…";
+  $("guided-stage-sub").textContent = "";
+}
+
+function setStageCountdown(n) {
+  const el = $("guided-stage");
+  if (!el) return;
+  el.dataset.step = "ready";
+  $("guided-stage-icon").textContent = String(n);
+  $("guided-stage-label").textContent = "GET READY";
+  $("guided-stage-sub").textContent = "";
 }
 
 function advanceGuidedPhase() {
@@ -1198,6 +1277,19 @@ function handleGuidedWavefront(startAbs, endAbs, peak, attackMs, durationMs) {
     setStatus(`guided · ${phase.label} · (skipped ${isPress ? "press" : "release"})`);
   }
 
+  // brief "✓ GOT IT" flash on captured slots; quieter on discarded ones
+  if (label) {
+    setStageCaptured();
+  } else {
+    const el = $("guided-stage");
+    if (el) {
+      el.dataset.step = "ready";
+      $("guided-stage-icon").textContent = "·";
+      $("guided-stage-label").textContent = "ok";
+      $("guided-stage-sub").textContent = "";
+    }
+  }
+
   g.wavefrontInCycle++;
   if (g.wavefrontInCycle >= phase.captures.length) {
     g.wavefrontInCycle = 0;
@@ -1206,9 +1298,29 @@ function handleGuidedWavefront(startAbs, endAbs, peak, attackMs, durationMs) {
     g.cycleCooldownUntil = now + 800;
     updateGuidedUI();
     if (g.cyclesInPhase >= phase.cycles) {
+      // phase advance handler takes over the stage
       advanceGuidedPhase();
+    } else {
+      // after the cooldown flash, prompt the next cycle's first slot
+      setTimeout(() => {
+        if (!state.guided || state.guided.phaseIdx !== g.phaseIdx) return;
+        setStageCooldown();
+        setTimeout(() => {
+          if (!state.guided || state.guided.phaseIdx !== g.phaseIdx) return;
+          setStageForSlot(phase, 0);
+          updateGuidedUI();
+        }, 350);
+      }, 250);
     }
   } else {
+    // mid-cycle — show the next slot's prompt after a brief beat
+    setTimeout(() => {
+      if (!state.guided) return;
+      const p = GUIDED_PHASES[state.guided.phaseIdx];
+      if (p !== phase) return;
+      setStageForSlot(p, g.wavefrontInCycle);
+      updateGuidedUI();
+    }, 250);
     updateGuidedUI();
   }
 }
