@@ -12,3 +12,6 @@ devenv.local.yaml
 # vercel build cache
 .vercel/
 
+# user-recorded sample libraries — personal, can be large
+samples/
+
