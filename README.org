@@ -1,0 +1,238 @@
+#+TITLE: thock
+#+SUBTITLE: the honest sound library for mechanical keyswitches
+#+AUTHOR: mwlabs
+#+OPTIONS: toc:2 num:nil
+
+* The problem
+
+Mechanical-keyboard sound is the hobby's most-discussed, least-measurable
+property. Reviewers say /thocky/, /poppy/, /creamy/, /marble/. Manufacturer
+demos are recorded in soundproof booths with $3,000 microphones. You watch
+a YouTube clip, buy the switch, install it on /your/ board on /your/ desk,
+and it sounds nothing like the clip.
+
+There is no shared, comparable, reproducible language for switch sound.
+
+* What thock is
+
+A measurement instrument. You record /your/ switches under /your/
+conditions, and you get back something quantitative:
+
+- the actual frequencies present in the press (the housing's resonant
+  signature)
+- the full envelope from attack to housing ring-out
+- both the press and the release wavefronts of each key cycle
+- a /fingerprint/ — the averaged spectrum across every press of a given
+  switch, the thing that is genuinely "the sound of this switch"
+
+You can compare two switches side by side. You can let a virtual typist
+play either one back at any WPM, using /your/ samples, with realistic
+English digraph timing — so you hear what 60 seconds of actual
+paragraph-typing on that switch would sound like. Not a single press in
+isolation; the whole texture.
+
+Single-page web app. Static. Everything runs in your browser. Recordings
+land on your disk via the File System Access API. Nothing is uploaded.
+
+Live: *https://thock.mwlabs.be*
+
+* Who it's for
+
+** The curious
+"What does this switch I just bought actually sound like? Is it as thocky
+as people said?"
+
+Record 50 presses, look at the fingerprint, hit /typist/, hear it as
+typing.
+
+** The comparison shopper
+"Holy Panda or Boba U4T?"
+
+Record both. Their fingerprints sit next to each other. The typist plays
+either one with one click — same text, same WPM, same recording
+conditions. The difference is audible and visible.
+
+** The reviewer / seller
+"I want to publish a switch-sound library that's directly comparable to
+other people's libraries — because we used the same instrument."
+
+Record a full dataset (50-200 samples per switch), bundle it as a preset,
+publish. Anyone running thock can import and compare against their own
+captures. Reviews stop being subjective adjectives and start being
+overlaid spectra.
+
+** The hobbyist explorer
+"I want to browse switches I'll never own and hear what typing on them
+would sound like."
+
+Open the preset library, pick a switch, hit /typist/. Type something.
+Listen. Move on.
+
+* The four panes
+
+** capture
+Enable the mic, choose a folder, click /arm/. Every press above the
+auto-learned noise floor is segmented and written as a WAV in real time.
+No metronome, no review step — just press as you would type, and each
+keystroke lands on disk. Vary your force and speed; the fingerprint
+averages over the lot.
+
+** switch
+Your library, one card per switch, color-coded. The fingerprint canvas
+shows the averaged smoothed spectrum with the top resonant peaks labelled
+(/428 Hz/, /1.24 kHz/, /4.5 kHz/ …). The samples grid shows every press,
+sortable by amplitude or recording order.
+
+** inspect
+Click any sample to see its waveform (onset-aligned, with =DOWN= / =UP=
+markers for clicky switches), its per-sample FFT, and a magma-colormap
+STFT spectrogram.
+
+** typist
+Pick a switch, set a WPM, pick a text mode (top-100 English words /
+quotes / pangrams / random). Hit start. The typist schedules samples
+ahead of time using AudioContext, plays press + release wavefronts with
+realistic dwell, cycles through your samples so no two strokes are
+identical, and renders the letters above the keystroke waveforms in
+sync.
+
+* The recording philosophy
+
+A "press of switch X" is a /concept/ in Rand's sense: a class of acoustic
+events that share an essential signature (the conceptual common
+denominator — frequency-domain identity of the housing, attack character,
+release character) and differ only in measurements that don't matter
+(velocity, finger angle, mic distance jitter).
+
+Thock's capture pipeline is built to that idea:
+
+- /Preserve the CCD./ The full press — attack, click(s), housing ring,
+  release wavefront — is captured. The tail-close threshold is below the
+  trigger threshold so housing ring-out is never chopped.
+- /Exclude non-units./ Spectral and temporal sanity checks before a
+  recording is written. Door slams, voice, chair creaks don't share the
+  CCD of a keyswitch press — they don't enter the concept.
+- /Measurements omitted ≠ measurements nonexistent./ Each WAV gets a
+  sidecar JSON: peak, RMS, attack ms, sub-event count and spacing,
+  spectral centroid, captured noise-floor. The fingerprint can re-verify
+  that every contributing sample really is a unit of the concept (and
+  reject outliers).
+- /Commensurable./ Float-32 WAV format, no quantization on the quiet
+  tail. Session-calibrated noise floor instead of a drifting EMA.
+- /Differentiated./ The trigger uses a high-passed envelope so room
+  rumble can't inflate the threshold; the threshold tracks the noise
+  /in the band where keyswitch transients live/.
+
+* Running locally
+
+Requires [[https://devenv.sh][devenv]]:
+
+#+BEGIN_SRC sh
+devenv up        # static server on http://127.0.0.1:8765
+#+END_SRC
+
+Or any static server:
+
+#+BEGIN_SRC sh
+python -m http.server 8765
+#+END_SRC
+
+Click /choose folder/ to pick where samples go. Firefox/Safari fall back
+to OPFS (browser-managed filesystem, functionally identical, just not
+visible to other tools).
+
+* Adding presets
+
+After recording your dataset:
+
+#+BEGIN_SRC sh
+python scripts/bundle_presets.py /path/to/your/samples --clear
+#+END_SRC
+
+Copies each =<switch>/*.wav= into =presets/<switch>/= and regenerates
+=presets/index.json=. Optional =meta.json= per switch:
+
+#+BEGIN_SRC json
+{
+  "name": "Choc v2 Red",
+  "description": "Kailh Choc v2 Red — 50 gf linear",
+  "color": "#ff6b6b"
+}
+#+END_SRC
+
+Commit and push. The site picks them up.
+
+* Stack
+
+- Vanilla HTML / CSS / JavaScript — no framework, no build
+- Web Audio API + AudioWorklet for capture (sub-batch latency)
+- File System Access API + IndexedDB handle (real folder) or OPFS
+  (browser-managed) — backend-agnostic above the FS layer
+- Fonts: Major Mono Display (wordmark), Geist Mono (everything else)
+
+* Roadmap
+
+** Now (v1)
+- Perfect-recording pipeline (high-passed trigger, float-32 WAV,
+  spectral non-unit rejection, release-wavefront capture, sidecar
+  measurements)
+- True-to-life typist (release wavefronts, sample variety, velocity
+  dynamics, micro-jitter, stereo spread, spacebar differentiation)
+- Coherent UI story
+
+** Next (v1.x)
+- Side-by-side A/B fingerprint compare in a single canvas
+- Shareable comparison URLs (URL-encoded fingerprint vector + names)
+- Preset marketplace: community-contributed verified switches
+- Switch similarity search ("show me switches that sound like this one")
+
+** Later
+- ML-based synthesis from sparse samples (more variety from fewer
+  recordings; needs a server tier)
+- Recording quality auto-check (room noise estimate, mic distance hint)
+- Mobile capture client
+
+* Monetization
+
+Thock's core loop — record, fingerprint, inspect, share — stays free.
+There is no good reason to gate someone from analyzing the sound of
+their own keyboard.
+
+What scales:
+
+** typist tokens (the primary lever)
+The typist is the part of the app you /spend time in/. Listening to a
+preset switch type out a paragraph is the moment people get hooked and
+the moment they're comparing options. It also accidentally makes a good
+metering surface: minutes of audible playback, not keystrokes captured.
+
+- Free: 60 seconds of typist per session, generous enough to evaluate a
+  switch. Capture and fingerprint are unmetered.
+- Tokens: $5 = 60 minutes of typist time. $20 = 5 hours. $50 = lifetime.
+- Tokens cover hosting and fund the curated preset library + the eventual
+  server-side ML synthesis tier.
+
+The honest pitch: capture is free because it costs nothing to run; the
+typist is metered because (a) it's the leisure feature you'd happily pay
+for and (b) future versions will do real-time server-side synthesis from
+your samples, which has a real cost.
+
+** preset marketplace (the secondary lever)
+Verified preset packs from manufacturers, reviewers, and switch designers.
+$2-10 per pack. Revenue-shared 70/30 with the contributor.
+
+** pro tier (optional)
+$5/mo: unlimited typist, cloud sync of your library across devices,
+shareable A/B comparison URLs with custom branding, no marketplace fees
+on packs you publish.
+
+** what stays free, forever
+- Recording your own switches
+- Inspecting fingerprints and samples
+- Importing the un-curated community preset list
+- Exporting your samples
+- Running the app on your own server (it's static)
+
+* License
+
+MIT.
