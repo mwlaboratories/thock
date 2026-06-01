@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>thock — switch sound lab</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Major+Mono+Display&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <h1>t<span>ho</span>ck</h1>
+  <div class="topbar-status">
+    <button id="storage-btn" class="action ghost small" title="storage folder">no folder</button>
+    <span id="status-text">awaiting microphone</span>
+    <div class="level-meter">
+      <div class="level-fill" id="level-fill"></div>
+      <div class="level-db" id="level-db">— dB</div>
+    </div>
+  </div>
+</header>
+
+<div id="storage-gate" class="storage-gate hidden">
+  <div class="storage-gate-card">
+    <h3>choose where samples live</h3>
+    <p>thock writes WAV files locally. Nothing is uploaded.</p>
+    <p class="dim" id="storage-gate-sub">previously: <span id="storage-prev-name">—</span></p>
+    <div class="storage-gate-actions">
+      <button id="storage-pick" class="action primary">choose folder</button>
+      <button id="storage-opfs" class="action ghost">use browser storage</button>
+    </div>
+    <p class="dim small" id="storage-explain">
+      <strong>folder</strong> — a real directory on your disk; files are visible to other tools.
+      <br/>
+      <strong>browser storage</strong> — private to this site; works in any modern browser.
+    </p>
+  </div>
+</div>
+
+<main>
+
+  <section class="pane capture-pane">
+    <div class="pane-head">
+      <h2>capture</h2>
+      <span class="pane-status" id="capture-status">offline</span>
+    </div>
+
+    <div class="scope-wrap">
+      <canvas id="scope" width="800" height="160"></canvas>
+      <div class="scope-legend">
+        <span>3 s window · live envelope · trigger marks shown in amber</span>
+      </div>
+    </div>
+
+    <div class="capture-actions">
+      <button id="primary" class="action primary">enable mic</button>
+    </div>
+
+    <p class="hint">click <strong>start</strong> to arm. each keypress above the noise floor is written to disk as a WAV. press as many as you like, varying speed and force. click <strong>stop</strong> when done.</p>
+
+    <dl class="capture-meta">
+      <div><dt>saved this session</dt><dd id="session-count">0</dd></div>
+      <div><dt>noise floor</dt><dd id="meta-floor">—</dd></div>
+      <div><dt>switch</dt><dd id="meta-switch">—</dd></div>
+    </dl>
+  </section>
+
+  <section class="pane switch-pane">
+    <div class="pane-head">
+      <h2>switch</h2>
+      <div class="pane-head-actions">
+        <button id="presets-btn" class="action ghost small">presets</button>
+        <button id="new-switch" class="action ghost small">+ new</button>
+      </div>
+    </div>
+
+    <div class="switch-row" id="switch-row">
+      <div class="switch-empty">no switches yet</div>
+    </div>
+
+    <div class="fingerprint">
+      <div class="fingerprint-head">
+        <span class="fp-label">fingerprint</span>
+        <span class="fp-name" id="fp-name">—</span>
+        <span class="fp-meta" id="fp-meta"></span>
+      </div>
+      <canvas id="fingerprint" width="1200" height="220"></canvas>
+    </div>
+
+    <div class="samples-head">
+      <span>samples</span>
+      <div class="samples-actions">
+        <select id="order" class="mini-select">
+          <option value="recorded">recorded</option>
+          <option value="amplitude-desc">loud → soft</option>
+          <option value="amplitude-asc">soft → loud</option>
+          <option value="random">random</option>
+        </select>
+        <button id="delete-all-btn" class="action ghost small">clear samples</button>
+        <button id="remove-switch-btn" class="action ghost small danger">remove switch</button>
+      </div>
+    </div>
+
+    <div class="samples" id="sample-grid"></div>
+  </section>
+
+  <section class="pane inspect-pane">
+    <div class="pane-head">
+      <h2>inspect</h2>
+      <span class="pane-status" id="detail-title">— select a sample —</span>
+    </div>
+
+    <div class="inspect-info" id="detail-info"></div>
+
+    <div class="inspect-actions">
+      <button id="detail-play" class="action small">▶ play</button>
+      <button id="detail-delete" class="action small ghost">remove</button>
+    </div>
+
+    <div class="inspect-block">
+      <span class="block-label">waveform</span>
+      <canvas id="detail-wave" width="800" height="140"></canvas>
+    </div>
+
+    <div class="inspect-block">
+      <span class="block-label">spectrum</span>
+      <canvas id="detail-fft" width="800" height="180"></canvas>
+    </div>
+
+    <div class="inspect-block">
+      <span class="block-label">spectrogram · time × frequency</span>
+      <canvas id="detail-spec" width="800" height="180"></canvas>
+    </div>
+  </section>
+
+  <section class="pane typist-pane">
+    <div class="pane-head">
+      <h2>typist</h2>
+      <span class="pane-status" id="typist-status">idle</span>
+    </div>
+
+    <div class="typist-controls">
+      <button id="type-start" class="action primary">▶ start</button>
+      <button id="type-stop" class="action ghost">■ stop</button>
+      <label class="param">wpm <input type="number" id="wpm" value="100" min="20" max="240" /></label>
+      <label class="param">mode
+        <select id="typist-mode" class="mini-select">
+          <option value="words">words</option>
+          <option value="quotes">quotes</option>
+          <option value="pangrams">pangrams</option>
+          <option value="random">random</option>
+        </select>
+      </label>
+      <p class="hint">click a switch to instantly swap which one the typist plays from.</p>
+    </div>
+
+    <div class="typist-switches" id="typist-switches"></div>
+
+    <div class="typist-stack">
+      <span class="block-label">typing · last 5 s</span>
+      <canvas id="typist-text" width="1600" height="56"></canvas>
+      <canvas id="typist-viz" width="1600" height="120"></canvas>
+    </div>
+  </section>
+
+</main>
+
+<dialog id="presets-dialog">
+  <h3>switch presets</h3>
+  <p class="dialog-hint">curated keyswitch sound libraries. importing copies the samples into your storage folder as a new switch.</p>
+  <div id="presets-list" class="presets-list"></div>
+  <p class="dialog-hint">want to contribute your switch? export it via the <em>share</em> button on any switch, then open an issue at the repo with the zip.</p>
+  <div class="row dialog-actions">
+    <button id="presets-close" class="action ghost">close</button>
+  </div>
+</dialog>
+
+<dialog id="new-switch-dialog">
+  <form method="dialog">
+    <h3>name a new switch</h3>
+    <input id="new-switch-name" autofocus placeholder="cherry_mx_red" />
+    <p class="dialog-hint">letters, digits, dot, dash, underscore.</p>
+    <div class="row dialog-actions">
+      <button id="new-switch-ok" value="ok" class="action primary">create</button>
+      <button type="button" id="new-switch-cancel" class="action ghost">cancel</button>
+    </div>
+  </form>
+</dialog>
+
+
+<script src="/app.js"></script>
+</body>
+</html>
