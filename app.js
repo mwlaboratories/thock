@@ -304,6 +304,10 @@ const state = {
   switchProfiles: new Map(),
   switchColors: new Map(),
   colorPopover: null,
+  // calibrated dwell-window (ms) per switch, learned from guided session
+  // slow phases. Falls back to state.dwellWindowMs when unset. Persisted
+  // in localStorage so a switch keeps its calibration across sessions.
+  switchDwells: new Map(),
 
   // --- typist ---
   typingActive: false, typingStop: null, typingSwitch: null,
@@ -377,6 +381,20 @@ function loadSwitchColors() {
   try {
     const raw = localStorage.getItem("thock.colors");
     if (raw) state.switchColors = new Map(JSON.parse(raw));
+  } catch (_) { /* malformed → start fresh */ }
+}
+
+function setSwitchDwell(name, ms) {
+  state.switchDwells.set(name, ms);
+  try {
+    localStorage.setItem("thock.dwells", JSON.stringify([...state.switchDwells]));
+  } catch (_) { /* private mode etc */ }
+}
+
+function loadSwitchDwells() {
+  try {
+    const raw = localStorage.getItem("thock.dwells");
+    if (raw) state.switchDwells = new Map(JSON.parse(raw));
   } catch (_) { /* malformed → start fresh */ }
 }
 
@@ -722,13 +740,51 @@ async function startGuided() {
     showStorageGate(state.storageName);
     return;
   }
-  state.guided = { phaseIdx: 0, capturedInPhase: 0, totalCaptured: 0 };
+  state.guided = {
+    phaseIdx: 0,
+    capturedInPhase: 0,
+    totalCaptured: 0,
+    // dwell calibration — every paired wavefront during slow phases
+    // adds its inter-wavefront gap here; we compute median + safety
+    // margin in finishGuided and persist as the switch's dwell window.
+    observedDwells: [],
+    // listening = false during the per-phase ready countdown so the
+    // mouseclick that started the session (and the hand-to-keyboard
+    // movement) doesn't get recorded as wavefront #1.
+    listening: false,
+    countdown: 0,
+  };
   $("guided-panel").classList.remove("hidden");
   updateGuidedUI();
   // arm() handles inEvent / belowSince / lastEventEnd resets so events
   // captured before guided mode don't leak into the new session.
   if (!state.armed) await arm();
-  setStatus(`guided · ${state.currentSwitch} · phase 1 of ${GUIDED_PHASES.length}`);
+  beginPhaseCountdown();
+}
+
+function beginPhaseCountdown() {
+  if (!state.guided) return;
+  state.guided.listening = false;
+  state.guided.countdown = 3;
+  updateGuidedUI();
+  const tick = () => {
+    if (!state.guided) return;
+    state.guided.countdown--;
+    if (state.guided.countdown > 0) {
+      updateGuidedUI();
+      setTimeout(tick, 1000);
+    } else {
+      // begin listening — discard any wavefront the user accidentally
+      // produced during the countdown (mouseclick, hand movement) so it
+      // can't pair with the first real press.
+      _clearPendingFlush();
+      state.guided.listening = true;
+      updateGuidedUI();
+      const phase = GUIDED_PHASES[state.guided.phaseIdx];
+      setStatus(`guided · ${phase.label} · go`);
+    }
+  };
+  setTimeout(tick, 1000);
 }
 
 function advanceGuidedPhase() {
@@ -740,8 +796,7 @@ function advanceGuidedPhase() {
     return;
   }
   updateGuidedUI();
-  const phase = GUIDED_PHASES[state.guided.phaseIdx];
-  setStatus(`next: ${phase.label}`);
+  beginPhaseCountdown();
 }
 
 function skipGuidedPhase() {
@@ -755,14 +810,36 @@ function cancelGuided() {
 }
 
 function finishGuided(cancelled) {
-  const total = state.guided ? state.guided.totalCaptured : 0;
+  const g = state.guided;
+  const total = g ? g.totalCaptured : 0;
+  const sw = state.currentSwitch;
+  let calibratedMsg = "";
+
+  // Calibrate dwell from slow-phase pair gaps. Slow phases give us the
+  // user's natural full-cycle dwell with minimal blur. Median + 50 ms
+  // safety margin, clamped to a sane keyboard range.
+  if (g && !cancelled && sw) {
+    const slowGaps = g.observedDwells
+      .filter((d) => d.phase.endsWith("-slow"))
+      .map((d) => d.gapMs)
+      .sort((a, b) => a - b);
+    if (slowGaps.length >= 2) {
+      const median = slowGaps[Math.floor(slowGaps.length / 2)];
+      const calibrated = clamp(Math.round((median + 50) / 10) * 10, 80, 500);
+      setSwitchDwell(sw, calibrated);
+      calibratedMsg = ` · dwell ${calibrated} ms`;
+    }
+  }
+
   state.guided = null;
   $("guided-panel").classList.add("hidden");
   if (state.armed) disarm();
   if (cancelled) {
     setStatus(`guided cancelled · ${total} sample${total === 1 ? "" : "s"} kept`);
   } else {
-    setStatus(`guided complete · ${total} samples captured`);
+    setStatus(`guided complete · ${total} samples${calibratedMsg}`);
+    // refresh the fingerprint meta so the new dwell shows immediately
+    if (sw === state.currentSwitch) loadSwitchSamples(sw).catch(() => {});
   }
 }
 
@@ -775,11 +852,14 @@ function updateGuidedUI() {
     `phase ${idx + 1} of ${GUIDED_PHASES.length}`;
   $("guided-label").textContent = phase.label;
   $("guided-hint").textContent = phase.hint;
-  // dots: filled for captured, empty for remaining. "●●●○○ — 3 of 5"
-  const got = state.guided.capturedInPhase;
-  const need = phase.count;
-  const dots = "●".repeat(got) + "○".repeat(Math.max(0, need - got));
-  $("guided-counter").textContent = `${dots}   ${got} of ${need}`;
+  if (state.guided.countdown > 0) {
+    $("guided-counter").textContent = `ready in ${state.guided.countdown}…`;
+  } else {
+    const got = state.guided.capturedInPhase;
+    const need = phase.count;
+    const dots = "●".repeat(got) + "○".repeat(Math.max(0, need - got));
+    $("guided-counter").textContent = `${dots}   ${got} of ${need}`;
+  }
 }
 
 // ============== wavefront pair-coalescer ===========================
@@ -800,8 +880,19 @@ function updateGuidedUI() {
 // flushed as a lone wavefront — that's the natural outcome during
 // rolling typing, where each release blurs with the next press.
 
+function dwellWindowForCurrent() {
+  // Switch-specific calibrated dwell takes priority over the global
+  // default — once a switch's slow phase has taught us its natural
+  // press cycle length, the coalescer uses that.
+  const cal = state.currentSwitch && state.switchDwells.get(state.currentSwitch);
+  return cal || state.dwellWindowMs;
+}
+
 function emitWavefront(startAbs, endAbs) {
   if (!state.currentSwitch || !state.storageHandle) return;
+  // During a guided phase's "ready" countdown, ignore everything — the
+  // mouseclick that started the session shouldn't get recorded.
+  if (state.guided && !state.guided.listening) return;
   const sr = state.sampleRate;
   if (endAbs - startAbs < sr * 0.012) return;  // <12 ms = debounce
 
@@ -834,13 +925,21 @@ function emitWavefront(startAbs, endAbs) {
     }
   }
 
+  const dwellWindow = dwellWindowForCurrent();
+
   // Pairing decision.
   if (state.pendingWavefront) {
     const gapSamples = startAbs - state.pendingWavefront.endAbs;
     const gapMs = (gapSamples / sr) * 1000;
-    if (gapMs <= state.dwellWindowMs) {
+    if (gapMs <= dwellWindow) {
       const pairStart = state.pendingWavefront.startAbs;
       _clearPendingFlush();
+      // Feed the gap to the calibrator — only pairs tell us the
+      // user's actual dwell; lone wavefronts don't.
+      if (state.guided) {
+        const phase = GUIDED_PHASES[state.guided.phaseIdx];
+        state.guided.observedDwells.push({ phase: phase.id, gapMs });
+      }
       saveCycle(pairStart, endAbs, "pair");
       return;
     }
@@ -850,7 +949,7 @@ function emitWavefront(startAbs, endAbs) {
   }
   state.pendingWavefront = { startAbs, endAbs };
   state.pendingFlushTimer = setTimeout(
-    flushPendingWavefront, state.dwellWindowMs + 30
+    flushPendingWavefront, dwellWindow + 30
   );
 }
 
@@ -963,7 +1062,7 @@ async function loadSwitchSamples(name) {
   state.switchSamples = tiles;
   renderTiles();
   drawFingerprint(state.switchProfiles.get(name) || null);
-  $("fp-meta").textContent = sw.count + " samples";
+  $("fp-meta").textContent = sw.count + " samples" + dwellSuffix(name);
 
   // batched decode; partial results render progressively
   let loaded = 0, failed = 0;
@@ -981,9 +1080,15 @@ async function loadSwitchSamples(name) {
   const profile = computeSwitchProfile(name);
   state.switchProfiles.set(name, profile);
   drawFingerprint(profile);
+  const dw = dwellSuffix(name);
   $("fp-meta").textContent = profile
-    ? `${profile.count} samples · ${(profile.sr / 1000).toFixed(1)} kHz`
-    : sw.count + " samples";
+    ? `${profile.count} samples · ${(profile.sr / 1000).toFixed(1)} kHz${dw}`
+    : `${sw.count} samples${dw}`;
+}
+
+function dwellSuffix(name) {
+  const ms = state.switchDwells.get(name);
+  return ms ? ` · dwell ${ms} ms` : "";
 }
 
 async function ensureSampleMeta(t) {
@@ -2754,6 +2859,7 @@ function refreshFftViews() {
 
 async function init() {
   loadSwitchColors();
+  loadSwitchDwells();
   loadFftSettings();
   wire();
   if ($("fp-window")) $("fp-window").value = state.fft.window;
