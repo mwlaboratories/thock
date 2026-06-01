@@ -260,14 +260,37 @@ const state = {
   hpPrevY: 0,
 
   // --- segmentation parameters ---
-  //   tailMs  how long the *high-passed* signal must stay below the tail
-  //           threshold (half of trigger) before the event closes. Longer
-  //           than the housing ring you'd ever care about.
-  //   gapMs   minimum quiet time after a finalized event before the next
-  //           one can open. 60 ms ≈ 200 wpm ceiling.
-  //   prerollMs  how much pre-trigger audio we splice in so the leading
-  //           transient (which crosses threshold mid-batch) is not clipped.
-  tailMs: 280, gapMs: 60, prerollMs: 50,
+  //
+  // The model: each above-threshold burst is one WAVEFRONT (a down-press
+  // OR an up-release — both produce a sharp transient). A press CYCLE is
+  // a pair of wavefronts separated by the user's dwell time. After a
+  // wavefront closes, we buffer it for dwellWindowMs to see if a partner
+  // arrives; if so, the pair is saved as one WAV spanning both. If not,
+  // the lone wavefront is saved (which is the natural outcome during
+  // rolling typing, where releases blur with subsequent presses).
+  //
+  //   wavefrontTailMs  quiet time required to close a single wavefront.
+  //                    Much tighter than the old "press blob" tail — we
+  //                    just need to see the transient finish.
+  //   dwellWindowMs    how long after a wavefront ends we wait for its
+  //                    partner. 250 ms covers all but the most leisurely
+  //                    holds; calibrated per switch by guided session.
+  //   gapMs            minimum quiet time between consecutive wavefronts
+  //                    before the trigger will fire again — small enough
+  //                    that a release ~50 ms after a press still gets
+  //                    captured as a separate wavefront (and then paired).
+  //   prerollMs        pre-trigger audio spliced in so the leading
+  //                    transient (which crosses threshold mid-batch) is
+  //                    not clipped.
+  wavefrontTailMs: 35,
+  dwellWindowMs: 250,
+  gapMs: 25,
+  prerollMs: 50,
+
+  // backing buffer for the pair-coalescer — when set, a wavefront has
+  // closed and we are waiting up to dwellWindowMs for its partner.
+  pendingWavefront: null,    // { startAbs, endAbs, emittedAtMs }
+  pendingFlushTimer: null,
 
   // --- arm/segmentation runtime (the trigger that writes WAVs as you press) ---
   armed: false,
@@ -531,15 +554,16 @@ function handleBatch(inp) {
 
   if (!state.armed) return;
 
-  // Trigger-based segmentation. A press opens when hpBatchPeak crosses
-  // the (4× HP-floor) trigger, honoring `gapMs` after the last close.
-  // The press closes after `tailMs` of hpBatchPeak below *half* the
-  // trigger — housing ring sits between the floor and the trigger and
-  // is part of the switch's identity, not noise.
+  // Wavefront segmentation. Each above-threshold burst becomes ONE
+  // wavefront (could be a down or an up). Trigger opens on hpBatchPeak >
+  // 4× HP-floor, honoring `gapMs` since the last wavefront closed. The
+  // wavefront closes after `wavefrontTailMs` (~35 ms) of hpBatchPeak
+  // below half the trigger — just enough to see the transient finish.
+  // Pairing into press cycles happens downstream in emitWavefront.
   const thr = state.autoThreshold;
   const tailThr = thr * 0.5;
   const gapSamp = Math.floor((state.gapMs / 1000) * sr);
-  const tailSamp = Math.floor((state.tailMs / 1000) * sr);
+  const tailSamp = Math.floor((state.wavefrontTailMs / 1000) * sr);
   const prerollSamp = Math.floor((state.prerollMs / 1000) * sr);
 
   if (!state.inEvent) {
@@ -560,7 +584,7 @@ function handleBatch(inp) {
         const endA   = state.belowSinceAbs + tailSamp;
         state.inEvent = false;
         state.lastEventEndAbs = endA;
-        finalizeEvent(startA, endA);
+        emitWavefront(startA, endA);
       }
     }
   }
@@ -621,13 +645,14 @@ function encodeWav(float32, sampleRate) {
 }
 
 
-// ============== arm / finalize ====================================
+// ============== arm / disarm ======================================
 //
-// The whole capture model: once armed, every batch peak above the
-// auto-tracked noise floor opens an event; after `tailMs` of continuous
-// quiet, the event closes and the ring-buffer slice is written to disk
-// as a WAV. No metronome, no clustering, no review — each press lands
-// on disk as you make it.
+// The capture model: once armed, every above-threshold burst becomes
+// one wavefront. Two wavefronts within `dwellWindowMs` get coalesced
+// into one press-cycle WAV (down + dwell + up). A wavefront left
+// alone past the dwell window is saved as a lone wavefront — that's
+// what happens during rolling typing, where releases overlap with
+// the next press. See emitWavefront for the full pair-coalescer.
 
 async function arm() {
   if (!state.audioCtx || !state.stream) { alert("enable the mic first"); return; }
@@ -652,6 +677,9 @@ function disarm() {
   if (!state.armed) return;
   state.armed = false;
   state.inEvent = false;
+  // any wavefront still buffered for pairing gets saved alone now —
+  // don't leave a press cycle floating in memory.
+  flushPendingWavefront();
   setPrimary("arm");
   $("capture-status").textContent = "ready";
   $("capture-status").classList.remove("armed");
@@ -754,25 +782,32 @@ function updateGuidedUI() {
   $("guided-counter").textContent = `${dots}   ${got} of ${need}`;
 }
 
-async function finalizeEvent(startAbs, endAbs) {
-  const sw = state.currentSwitch;
-  if (!sw || !state.storageHandle) return;
-  const pcm = readRingRange(startAbs, endAbs);
-  const sr = state.sampleRate;
-  if (pcm.length < sr * 0.012) return;   // <12 ms = debounce / noise
+// ============== wavefront pair-coalescer ===========================
+//
+// handleBatch hands each wavefront to emitWavefront once it closes
+// (~35 ms after the transient finishes). Per-wavefront non-unit
+// rejection happens here so a chair-creak can't accidentally pair
+// with a real press wavefront. If the wavefront looks press-like,
+// we either:
+//
+//   (a) pair it with state.pendingWavefront and save the combined
+//       press cycle from pending.startAbs → this.endAbs, OR
+//   (b) flush the pending wavefront alone (gap too big to pair) and
+//       buffer this one as the new pending, OR
+//   (c) buffer this one if nothing was pending.
+//
+// A timer ensures any wavefront left buffered past dwellWindowMs is
+// flushed as a lone wavefront — that's the natural outcome during
+// rolling typing, where each release blurs with the next press.
 
-  // Concept-membership check. A keyswitch press has a fast attack and a
-  // sharp peak-to-RMS ratio; sustained ambient noise (voice, HVAC, fan
-  // ramp, traffic, distant conversation) has a slow envelope and low
-  // crest factor. Reject anything that doesn't share the CCD of a press
-  // before it's written to disk — these would otherwise pollute the
-  // fingerprint average.
-  //
-  // During a guided session we *know* a press is happening (the user is
-  // following a prompt within a listening window) so we trust the
-  // structural context and skip the gate. Stray ambient noise during
-  // guided capture still gets through, but it's labeled with its phase
-  // and the user can review/delete from the sample grid.
+function emitWavefront(startAbs, endAbs) {
+  if (!state.currentSwitch || !state.storageHandle) return;
+  const sr = state.sampleRate;
+  if (endAbs - startAbs < sr * 0.012) return;  // <12 ms = debounce
+
+  // Compute wavefront metrics from the ring buffer slice. Per-wavefront
+  // rejection prevents bad wavefronts from contaminating pairs.
+  const pcm = readRingRange(startAbs, endAbs);
   let peak = 0, peakIdx = 0, sumSq = 0;
   for (let i = 0; i < pcm.length; i++) {
     const v = pcm[i] < 0 ? -pcm[i] : pcm[i];
@@ -781,10 +816,6 @@ async function finalizeEvent(startAbs, endAbs) {
   }
   const rms = Math.sqrt(sumSq / pcm.length);
   const crest = peak / Math.max(rms, 1e-9);
-
-  // Attack is measured from the *onset* (first sample crossing 20 % of
-  // peak) to the peak — NOT from buffer-start, which would mistakenly
-  // include the preroll silence and reject every real press.
   const onsetThr = peak * 0.20;
   let onsetIdx = 0;
   for (let i = 0; i < pcm.length; i++) {
@@ -794,14 +825,56 @@ async function finalizeEvent(startAbs, endAbs) {
 
   if (!state.guided) {
     const rejectReason =
-      (attackMs > 25)                ? `slow attack (${attackMs.toFixed(0)} ms)` :
-      (crest < 2.2 && peak < 0.15)   ? `low crest (${crest.toFixed(1)})` :
+      (attackMs > 25)              ? `slow attack (${attackMs.toFixed(0)} ms)` :
+      (crest < 2.2 && peak < 0.15) ? `low crest (${crest.toFixed(1)})` :
       null;
     if (rejectReason) {
-      setStatus(`rejected — ${rejectReason}`);
+      setStatus(`wavefront rejected — ${rejectReason}`);
       return;
     }
   }
+
+  // Pairing decision.
+  if (state.pendingWavefront) {
+    const gapSamples = startAbs - state.pendingWavefront.endAbs;
+    const gapMs = (gapSamples / sr) * 1000;
+    if (gapMs <= state.dwellWindowMs) {
+      const pairStart = state.pendingWavefront.startAbs;
+      _clearPendingFlush();
+      saveCycle(pairStart, endAbs, "pair");
+      return;
+    }
+    // gap exceeded the dwell window — flush the orphan, then this
+    // wavefront becomes the new pending candidate.
+    flushPendingWavefront();
+  }
+  state.pendingWavefront = { startAbs, endAbs };
+  state.pendingFlushTimer = setTimeout(
+    flushPendingWavefront, state.dwellWindowMs + 30
+  );
+}
+
+function flushPendingWavefront() {
+  const p = state.pendingWavefront;
+  _clearPendingFlush();
+  if (!p) return;
+  saveCycle(p.startAbs, p.endAbs, "lone");
+}
+
+function _clearPendingFlush() {
+  if (state.pendingFlushTimer) {
+    clearTimeout(state.pendingFlushTimer);
+    state.pendingFlushTimer = null;
+  }
+  state.pendingWavefront = null;
+}
+
+async function saveCycle(startAbs, endAbs, kind) {
+  const sw = state.currentSwitch;
+  if (!sw || !state.storageHandle) return;
+  const pcm = readRingRange(startAbs, endAbs);
+  const sr = state.sampleRate;
+  if (pcm.length < sr * 0.012) return;
 
   // Filename prefix when in a guided session — phase id sorts samples
   // by phase when the directory is listed alphabetically.
