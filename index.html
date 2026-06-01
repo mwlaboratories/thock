@@ -41,6 +41,25 @@
   </div>
 </div>
 
+<div id="guided-modal" class="guided-modal hidden" role="dialog" aria-modal="true" aria-labelledby="guided-title">
+  <div class="guided-card">
+    <div class="guided-card-head">
+      <h3 id="guided-title">guided recording</h3>
+      <span class="guided-phase-num" id="guided-phase-num">phase 1 of 4</span>
+    </div>
+    <div class="guided-card-switch" id="guided-card-switch">—</div>
+    <div class="guided-card-label" id="guided-label">5 light · slow</div>
+    <div class="guided-card-hint" id="guided-hint">barely there — full key travel, slow as a daydream</div>
+    <div class="guided-card-counter" id="guided-counter">○○○○○</div>
+    <div class="guided-card-status" id="guided-status">0 of 5</div>
+    <div class="guided-card-learned hidden" id="guided-learned"></div>
+    <div class="guided-card-controls">
+      <button id="guided-skip" class="action ghost">skip phase</button>
+      <button id="guided-cancel" class="action ghost danger">cancel</button>
+    </div>
+  </div>
+</div>
+
 <main>
 
   <section class="pane capture-pane">
@@ -59,22 +78,6 @@
     <div class="capture-actions">
       <button id="primary" class="action primary">enable mic</button>
       <button id="guided-btn" class="action ghost">guided session</button>
-    </div>
-
-    <div id="guided-panel" class="guided-panel hidden">
-      <div class="guided-head">
-        <span class="guided-title">guided recording</span>
-        <span class="guided-phase-num" id="guided-phase-num">phase 1 of 4</span>
-      </div>
-      <div class="guided-prompt">
-        <strong class="guided-label" id="guided-label">5 light · slow</strong>
-        <span class="guided-hint" id="guided-hint">barely there — full key travel, slow as a daydream</span>
-      </div>
-      <div class="guided-counter" id="guided-counter">○○○○○   0 of 5</div>
-      <div class="guided-controls">
-        <button id="guided-skip" class="action small ghost">skip phase</button>
-        <button id="guided-cancel" class="action small ghost danger">cancel</button>
-      </div>
     </div>
 
     <p class="hint"><strong>guided session</strong> walks you through a structured set of presses (light/firm × slow/fast). For freeform capture, click <strong>enable mic</strong>, then <strong>arm</strong>, then press the key.</p>

@@ -308,6 +308,11 @@ const state = {
   // slow phases. Falls back to state.dwellWindowMs when unset. Persisted
   // in localStorage so a switch keeps its calibration across sessions.
   switchDwells: new Map(),
+  // per-switch keypress template learned from the guided session —
+  // counts + median metrics for DOWN and UP wavefronts + dwell medians.
+  // Persisted in localStorage so the switch's "identity" survives across
+  // sessions and a returning user sees it without re-running guided.
+  switchTemplates: new Map(),
 
   // --- typist ---
   typingActive: false, typingStop: null, typingSwitch: null,
@@ -395,6 +400,20 @@ function loadSwitchDwells() {
   try {
     const raw = localStorage.getItem("thock.dwells");
     if (raw) state.switchDwells = new Map(JSON.parse(raw));
+  } catch (_) { /* malformed → start fresh */ }
+}
+
+function setSwitchTemplate(name, tpl) {
+  state.switchTemplates.set(name, tpl);
+  try {
+    localStorage.setItem("thock.templates", JSON.stringify([...state.switchTemplates]));
+  } catch (_) { /* private mode etc */ }
+}
+
+function loadSwitchTemplates() {
+  try {
+    const raw = localStorage.getItem("thock.templates");
+    if (raw) state.switchTemplates = new Map(JSON.parse(raw));
   } catch (_) { /* malformed → start fresh */ }
 }
 
@@ -715,15 +734,46 @@ function disarm() {
 // rejection), and shows live "X of N" feedback so the user can see
 // captures happening as they go.
 
+// Each phase asks the user to repeat a press cycle `cycles` times. Each
+// cycle produces wavefronts; `captures` maps wavefront-position-in-cycle
+// to a role label (or null = discard). The labels become the saved
+// filename prefix, so DOWN and UP samples are cleanly separated on disk
+// for later averaging into per-role spectra.
+//
+// Phases 1-2 isolate DOWN and UP individually (one role kept per cycle).
+// Phases 3-4 capture both wavefronts with known dwell times — long-hold
+// gives us a clean dwell baseline, natural-speed gives us the typing
+// dwell. Together they teach the system "what one keypress on this
+// switch looks like, and how that varies with speed."
 const GUIDED_PHASES = [
-  { id: "light-slow", label: "5 light · slow",  count: 5,
-    hint: "barely there — full key travel, slow as a daydream" },
-  { id: "hard-slow",  label: "5 firm · slow",   count: 5,
-    hint: "deliberate bottom-outs, same slow tempo" },
-  { id: "light-fast", label: "3 light · fast",  count: 3,
-    hint: "rapid taps, almost a brush" },
-  { id: "hard-fast",  label: "3 firm · fast",   count: 3,
-    hint: "fast and definite — the rolling-thunder finish" },
+  {
+    id: "down-iso",
+    label: "isolated DOWN",
+    hint: "press the key and HOLD a beat, then release. you'll do this 3 times — we only listen for the press.",
+    cycles: 3,
+    captures: ["down-iso", null],
+  },
+  {
+    id: "up-iso",
+    label: "isolated UP",
+    hint: "press, HOLD for about a second, then RELEASE. 3 times — we only listen for the release.",
+    cycles: 3,
+    captures: [null, "up-iso"],
+  },
+  {
+    id: "long-hold",
+    label: "1-second holds",
+    hint: "press, hold for about 1 second, release. 3 cycles — we capture both press and release.",
+    cycles: 3,
+    captures: ["down-1s", "up-1s"],
+  },
+  {
+    id: "natural",
+    label: "natural typing speed",
+    hint: "type at a comfortable speed. 5 presses — both wavefronts of each.",
+    cycles: 5,
+    captures: ["down-nat", "up-nat"],
+  },
 ];
 
 async function startGuided() {
@@ -742,11 +792,16 @@ async function startGuided() {
   }
   state.guided = {
     phaseIdx: 0,
-    capturedInPhase: 0,
+    // cycle progression within the current phase
+    cyclesInPhase: 0,
+    wavefrontInCycle: 0,
+    cycleCooldownUntil: 0,
     totalCaptured: 0,
-    // dwell calibration — every paired wavefront during slow phases
-    // adds its inter-wavefront gap here; we compute median + safety
-    // margin in finishGuided and persist as the switch's dwell window.
+    // per-wavefront observations across the whole session — fed by the
+    // guided handler. Each entry: { phase, label, peak, attackMs,
+    // durationMs }. The dwell sweep also accumulates inter-wavefront
+    // gaps in observedDwells for calibration.
+    observations: [],
     observedDwells: [],
     // listening = false during the per-phase ready countdown so the
     // mouseclick that started the session (and the hand-to-keyboard
@@ -754,7 +809,10 @@ async function startGuided() {
     listening: false,
     countdown: 0,
   };
-  $("guided-panel").classList.remove("hidden");
+  // hide any "learned" insight from a previous session
+  const learnedEl = $("guided-learned");
+  if (learnedEl) { learnedEl.classList.add("hidden"); learnedEl.innerHTML = ""; }
+  $("guided-modal").classList.remove("hidden");
   updateGuidedUI();
   // arm() handles inEvent / belowSince / lastEventEnd resets so events
   // captured before guided mode don't leak into the new session.
@@ -789,14 +847,66 @@ function beginPhaseCountdown() {
 
 function advanceGuidedPhase() {
   if (!state.guided) return;
+  // Surface what we just learned from the phase we're leaving so the
+  // user sees the system's understanding grow as they go.
+  displayLearnedSoFar();
   state.guided.phaseIdx++;
-  state.guided.capturedInPhase = 0;
+  state.guided.cyclesInPhase = 0;
+  state.guided.wavefrontInCycle = 0;
+  state.guided.cycleCooldownUntil = 0;
+  state.guided.lastPressEndAbs = null;
   if (state.guided.phaseIdx >= GUIDED_PHASES.length) {
     finishGuided(false);
     return;
   }
   updateGuidedUI();
   beginPhaseCountdown();
+}
+
+// Render the cumulative learning insight into the popup. Called between
+// phases so the user watches the template build up: after phase 1 you
+// see DOWN's metrics; after phase 2, UP is added; after the paired
+// phases, dwell measurements appear.
+function displayLearnedSoFar() {
+  const el = $("guided-learned");
+  if (!el || !state.guided) return;
+  const obs = state.guided.observations;
+  const lines = [];
+
+  const downObs = obs.filter((o) => o.label.startsWith("down-"));
+  if (downObs.length) lines.push(formatRoleLine("DOWN", downObs));
+
+  const upObs = obs.filter((o) => o.label.startsWith("up-"));
+  if (upObs.length) lines.push(formatRoleLine("UP", upObs));
+
+  const longDwells = state.guided.observedDwells
+    .filter((d) => d.phase === "long-hold").map((d) => d.gapMs);
+  const natDwells = state.guided.observedDwells
+    .filter((d) => d.phase === "natural").map((d) => d.gapMs);
+  if (longDwells.length) {
+    longDwells.sort((a, b) => a - b);
+    lines.push(`hold dwell ~<strong>${Math.round(longDwells[Math.floor(longDwells.length / 2)])} ms</strong>`);
+  }
+  if (natDwells.length) {
+    natDwells.sort((a, b) => a - b);
+    lines.push(`natural dwell ~<strong>${Math.round(natDwells[Math.floor(natDwells.length / 2)])} ms</strong>`);
+  }
+
+  if (!lines.length) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+  } else {
+    el.innerHTML = lines.join("<br>");
+    el.classList.remove("hidden");
+  }
+}
+
+function formatRoleLine(label, obs) {
+  const peaks = obs.map((o) => o.peak).sort((a, b) => a - b);
+  const attacks = obs.map((o) => o.attackMs).sort((a, b) => a - b);
+  const mp = peaks[Math.floor(peaks.length / 2)];
+  const ma = attacks[Math.floor(attacks.length / 2)];
+  return `<strong>${label}</strong> · ${obs.length} sample${obs.length === 1 ? "" : "s"} · peak ${mp.toFixed(2)} · attack ${ma.toFixed(0)} ms`;
 }
 
 function skipGuidedPhase() {
@@ -809,38 +919,77 @@ function cancelGuided() {
   finishGuided(true);
 }
 
-function finishGuided(cancelled) {
+async function finishGuided(cancelled) {
   const g = state.guided;
   const total = g ? g.totalCaptured : 0;
   const sw = state.currentSwitch;
   let calibratedMsg = "";
 
-  // Calibrate dwell from slow-phase pair gaps. Slow phases give us the
-  // user's natural full-cycle dwell with minimal blur. Median + 50 ms
-  // safety margin, clamped to a sane keyboard range.
   if (g && !cancelled && sw) {
-    const slowGaps = g.observedDwells
-      .filter((d) => d.phase.endsWith("-slow"))
+    // Dwell calibration from the natural-speed phase — that's the dwell
+    // we want the pair coalescer to use in free-form capture. Median +
+    // 50 ms safety margin, clamped to a sane keyboard range.
+    const naturalGaps = g.observedDwells
+      .filter((d) => d.phase === "natural")
       .map((d) => d.gapMs)
       .sort((a, b) => a - b);
-    if (slowGaps.length >= 2) {
-      const median = slowGaps[Math.floor(slowGaps.length / 2)];
+    if (naturalGaps.length >= 2) {
+      const median = naturalGaps[Math.floor(naturalGaps.length / 2)];
       const calibrated = clamp(Math.round((median + 50) / 10) * 10, 80, 500);
       setSwitchDwell(sw, calibrated);
       calibratedMsg = ` · dwell ${calibrated} ms`;
     }
+
+    // Build the full template — counts, median metrics per role, and
+    // top spectral resonances of the average DOWN / UP spectrum. Stored
+    // in localStorage as the switch's persistent identity. We need the
+    // saved samples loaded into samplesCache first, so wait for the
+    // most recent loadSwitchSamples to complete.
+    try { await loadSwitchSamples(sw); } catch (_) { /* best-effort */ }
+
+    const downObs = g.observations.filter((o) => o.label.startsWith("down-"));
+    const upObs   = g.observations.filter((o) => o.label.startsWith("up-"));
+    const downProfile = computeRoleProfile(sw, "down");
+    const upProfile   = computeRoleProfile(sw, "up");
+    const longDwells  = g.observedDwells.filter((d) => d.phase === "long-hold").map((d) => d.gapMs).sort((a, b) => a - b);
+    const natDwells   = g.observedDwells.filter((d) => d.phase === "natural").map((d) => d.gapMs).sort((a, b) => a - b);
+
+    const tpl = {
+      down: rolledUp(downObs, downProfile),
+      up:   rolledUp(upObs,   upProfile),
+      longDwellMs: longDwells.length ? Math.round(longDwells[Math.floor(longDwells.length / 2)]) : null,
+      naturalDwellMs: natDwells.length ? Math.round(natDwells[Math.floor(natDwells.length / 2)]) : null,
+      learnedAt: Date.now(),
+    };
+    if (tpl.down || tpl.up) setSwitchTemplate(sw, tpl);
   }
 
   state.guided = null;
-  $("guided-panel").classList.add("hidden");
+  $("guided-modal").classList.add("hidden");
   if (state.armed) disarm();
   if (cancelled) {
     setStatus(`guided cancelled · ${total} sample${total === 1 ? "" : "s"} kept`);
   } else {
     setStatus(`guided complete · ${total} samples${calibratedMsg}`);
-    // refresh the fingerprint meta so the new dwell shows immediately
     if (sw === state.currentSwitch) loadSwitchSamples(sw).catch(() => {});
   }
+}
+
+// Roll an array of observations + an averaged profile into the per-role
+// summary stored on the switch template. Keeps only what we'd want to
+// see at a glance later — counts, medians, top resonant frequencies.
+function rolledUp(obs, profile) {
+  if (!obs.length) return null;
+  const peaks = obs.map((o) => o.peak).sort((a, b) => a - b);
+  const attacks = obs.map((o) => o.attackMs).sort((a, b) => a - b);
+  return {
+    count: obs.length,
+    medianPeak: peaks[Math.floor(peaks.length / 2)],
+    medianAttackMs: attacks[Math.floor(attacks.length / 2)],
+    topResonancesHz: profile && profile.peaks
+      ? profile.peaks.slice(0, 3).map((p) => Math.round(p.freq))
+      : null,
+  };
 }
 
 function updateGuidedUI() {
@@ -848,17 +997,21 @@ function updateGuidedUI() {
   const idx = state.guided.phaseIdx;
   const phase = GUIDED_PHASES[idx];
   if (!phase) return;
+  $("guided-card-switch").textContent = state.currentSwitch || "—";
   $("guided-phase-num").textContent =
     `phase ${idx + 1} of ${GUIDED_PHASES.length}`;
   $("guided-label").textContent = phase.label;
   $("guided-hint").textContent = phase.hint;
   if (state.guided.countdown > 0) {
-    $("guided-counter").textContent = `ready in ${state.guided.countdown}…`;
+    $("guided-counter").textContent = String(state.guided.countdown);
+    $("guided-status").textContent = "ready…";
   } else {
-    const got = state.guided.capturedInPhase;
-    const need = phase.count;
+    const got = state.guided.cyclesInPhase;
+    const need = phase.cycles;
     const dots = "●".repeat(got) + "○".repeat(Math.max(0, need - got));
-    $("guided-counter").textContent = `${dots}   ${got} of ${need}`;
+    $("guided-counter").textContent = dots;
+    $("guided-status").textContent =
+      `${got} of ${need} cycle${need === 1 ? "" : "s"}`;
   }
 }
 
@@ -896,8 +1049,7 @@ function emitWavefront(startAbs, endAbs) {
   const sr = state.sampleRate;
   if (endAbs - startAbs < sr * 0.012) return;  // <12 ms = debounce
 
-  // Compute wavefront metrics from the ring buffer slice. Per-wavefront
-  // rejection prevents bad wavefronts from contaminating pairs.
+  // Compute wavefront metrics from the ring buffer slice.
   const pcm = readRingRange(startAbs, endAbs);
   let peak = 0, peakIdx = 0, sumSq = 0;
   for (let i = 0; i < pcm.length; i++) {
@@ -913,41 +1065,41 @@ function emitWavefront(startAbs, endAbs) {
     if ((pcm[i] < 0 ? -pcm[i] : pcm[i]) >= onsetThr) { onsetIdx = i; break; }
   }
   const attackMs = ((peakIdx - onsetIdx) / sr) * 1000;
+  const durationMs = ((endAbs - startAbs) / sr) * 1000;
 
-  if (!state.guided) {
-    const rejectReason =
-      (attackMs > 25)              ? `slow attack (${attackMs.toFixed(0)} ms)` :
-      (crest < 2.2 && peak < 0.15) ? `low crest (${crest.toFixed(1)})` :
-      null;
-    if (rejectReason) {
-      setStatus(`wavefront rejected — ${rejectReason}`);
-      return;
-    }
+  // Guided sessions get a dedicated handler — each wavefront is saved
+  // immediately with its role label baked into the filename; the pair
+  // coalescer is bypassed so labels stay clean.
+  if (state.guided) {
+    handleGuidedWavefront(startAbs, endAbs, peak, attackMs, durationMs);
+    return;
+  }
+
+  // Free-form capture: non-unit rejection then pair coalescing.
+  const rejectReason =
+    (attackMs > 25)              ? `slow attack (${attackMs.toFixed(0)} ms)` :
+    (crest < 2.2 && peak < 0.15) ? `low crest (${crest.toFixed(1)})` :
+    null;
+  if (rejectReason) {
+    setStatus(`wavefront rejected — ${rejectReason}`);
+    return;
   }
 
   const dwellWindow = dwellWindowForCurrent();
-
-  // Pairing decision.
   if (state.pendingWavefront) {
     const gapSamples = startAbs - state.pendingWavefront.endAbs;
     const gapMs = (gapSamples / sr) * 1000;
     if (gapMs <= dwellWindow) {
-      const pairStart = state.pendingWavefront.startAbs;
+      const pendingW = state.pendingWavefront;
       _clearPendingFlush();
-      // Feed the gap to the calibrator — only pairs tell us the
-      // user's actual dwell; lone wavefronts don't.
-      if (state.guided) {
-        const phase = GUIDED_PHASES[state.guided.phaseIdx];
-        state.guided.observedDwells.push({ phase: phase.id, gapMs });
-      }
-      saveCycle(pairStart, endAbs, "pair");
+      saveCycle(pendingW.startAbs, endAbs, "pair");
       return;
     }
-    // gap exceeded the dwell window — flush the orphan, then this
-    // wavefront becomes the new pending candidate.
     flushPendingWavefront();
   }
-  state.pendingWavefront = { startAbs, endAbs };
+  state.pendingWavefront = {
+    startAbs, endAbs, peak, attackMs, durationMs,
+  };
   state.pendingFlushTimer = setTimeout(
     flushPendingWavefront, dwellWindow + 30
   );
@@ -958,6 +1110,83 @@ function flushPendingWavefront() {
   _clearPendingFlush();
   if (!p) return;
   saveCycle(p.startAbs, p.endAbs, "lone");
+}
+
+// Guided sessions: each wavefront's role is dictated by the current
+// phase + its position-in-cycle. Wavefronts that fall on a "null" slot
+// (the discarded half of an iso phase) get logged as the cycle's other
+// wavefront and ignored — they're real audio but not what we're after
+// in this phase. Per-cycle cooldown prevents the discarded wavefront
+// from accidentally being counted as the next cycle's start.
+function handleGuidedWavefront(startAbs, endAbs, peak, attackMs, durationMs) {
+  const g = state.guided;
+  if (!g) return;
+
+  // Inter-cycle cooldown — between press cycles we ignore wavefronts so
+  // the user has a beat to reset and we don't double-count.
+  const now = performance.now();
+  if (g.cycleCooldownUntil && now < g.cycleCooldownUntil) {
+    return;
+  }
+
+  const phase = GUIDED_PHASES[g.phaseIdx];
+  const slotIdx = g.wavefrontInCycle;
+  const label = phase.captures[slotIdx];
+  const isPress = slotIdx === 0;
+
+  // Record the dwell when we see the release of a cycle that captured
+  // the press too — gives us dwell calibration across long-hold and
+  // natural-speed phases.
+  if (!isPress && g.lastPressEndAbs != null) {
+    const gapMs = ((startAbs - g.lastPressEndAbs) / state.sampleRate) * 1000;
+    g.observedDwells.push({ phase: phase.id, gapMs });
+  }
+  if (isPress) g.lastPressEndAbs = endAbs;
+
+  if (label) {
+    g.observations.push({ phase: phase.id, label, peak, attackMs, durationMs });
+    saveGuidedWavefront(startAbs, endAbs, g.phaseIdx, label);
+  } else {
+    // discarded wavefront — log it for the status line so the user knows
+    // we saw something
+    setStatus(`guided · ${phase.label} · (skipped ${isPress ? "press" : "release"})`);
+  }
+
+  g.wavefrontInCycle++;
+  if (g.wavefrontInCycle >= phase.captures.length) {
+    g.wavefrontInCycle = 0;
+    g.cyclesInPhase++;
+    g.lastPressEndAbs = null;
+    g.cycleCooldownUntil = now + 800;
+    updateGuidedUI();
+    if (g.cyclesInPhase >= phase.cycles) {
+      advanceGuidedPhase();
+    }
+  } else {
+    updateGuidedUI();
+  }
+}
+
+async function saveGuidedWavefront(startAbs, endAbs, phaseIdx, label) {
+  const sw = state.currentSwitch;
+  if (!sw || !state.storageHandle) return;
+  const sr = state.sampleRate;
+  const pcm = readRingRange(startAbs, endAbs);
+  if (pcm.length < sr * 0.012) return;
+  const phaseNum = String(phaseIdx + 1).padStart(2, "0");
+  const prefix = `${phaseNum}-${label}`;
+  const wav = encodeWav(pcm, sr);
+  try {
+    await fsSaveSample(sw, wav, prefix);
+    state.sessionCount++;
+    if (state.guided) state.guided.totalCaptured++;
+    $("session-count").textContent = String(state.sessionCount);
+    await refreshSwitches();
+    if (sw === state.currentSwitch) await loadSwitchSamples(sw);
+  } catch (e) {
+    console.error("guided save failed", e);
+    setStatus("save failed: " + e.message);
+  }
 }
 
 function _clearPendingFlush() {
@@ -1062,7 +1291,8 @@ async function loadSwitchSamples(name) {
   state.switchSamples = tiles;
   renderTiles();
   drawFingerprint(state.switchProfiles.get(name) || null);
-  $("fp-meta").textContent = sw.count + " samples" + dwellSuffix(name);
+  $("fp-meta").textContent =
+    sw.count + " samples" + dwellSuffix(name) + templateSuffix(name);
 
   // batched decode; partial results render progressively
   let loaded = 0, failed = 0;
@@ -1081,14 +1311,33 @@ async function loadSwitchSamples(name) {
   state.switchProfiles.set(name, profile);
   drawFingerprint(profile);
   const dw = dwellSuffix(name);
+  const tp = templateSuffix(name);
   $("fp-meta").textContent = profile
-    ? `${profile.count} samples · ${(profile.sr / 1000).toFixed(1)} kHz${dw}`
-    : `${sw.count} samples${dw}`;
+    ? `${profile.count} samples · ${(profile.sr / 1000).toFixed(1)} kHz${dw}${tp}`
+    : `${sw.count} samples${dw}${tp}`;
 }
 
 function dwellSuffix(name) {
   const ms = state.switchDwells.get(name);
   return ms ? ` · dwell ${ms} ms` : "";
+}
+
+function templateSuffix(name) {
+  const tpl = state.switchTemplates.get(name);
+  if (!tpl) return "";
+  const parts = [];
+  if (tpl.down && tpl.down.topResonancesHz && tpl.down.topResonancesHz[0]) {
+    parts.push(`DOWN ${formatHz(tpl.down.topResonancesHz[0])}`);
+  }
+  if (tpl.up && tpl.up.topResonancesHz && tpl.up.topResonancesHz[0]) {
+    parts.push(`UP ${formatHz(tpl.up.topResonancesHz[0])}`);
+  }
+  return parts.length ? ` · ${parts.join(" · ")}` : "";
+}
+
+function formatHz(hz) {
+  if (hz >= 1000) return (hz / 1000).toFixed(1) + " kHz";
+  return hz + " Hz";
 }
 
 async function ensureSampleMeta(t) {
@@ -1192,7 +1441,16 @@ function computeSwitchProfile(name) {
   );
   const rejected = all.length - samples.length;
   if (!samples.length) return null;
+  const prof = computeProfileFromSamples(samples);
+  if (prof) prof.rejected = rejected;
+  return prof;
+}
 
+// Average-spectrum profile for a subset of samples. Shared between the
+// whole-switch fingerprint and the per-role (DOWN / UP) profiles that
+// the guided session produces.
+function computeProfileFromSamples(samples) {
+  if (!samples || !samples.length) return null;
   const N = FFT_N;
   const re = new Float64Array(N), im = new Float64Array(N);
   const sumMag = new Float64Array(N / 2);
@@ -1220,11 +1478,18 @@ function computeSwitchProfile(name) {
   for (let i = 0; i < sumMag.length; i++) sumMag[i] /= samples.length;
   const smoothed = smoothLogFreq(sumMag, sr, 1 / 48);
   const spectralPeaks = findSpectralPeaks(smoothed, sr, 6);
-  return {
-    spectrum: smoothed, sr,
-    count: samples.length, rejected,
-    peaks: spectralPeaks,
-  };
+  return { spectrum: smoothed, sr, count: samples.length, peaks: spectralPeaks };
+}
+
+// Per-role profile: filenames produced by the guided session start with
+// "NN-down-…" or "NN-up-…", so we filter by that prefix and average
+// over the matching samples. Returns null if nothing is labeled.
+function computeRoleProfile(switchName, role) {
+  const re = new RegExp(`^\\d+-${role}-`);
+  const samples = state.switchSamples.filter(
+    (t) => t.meta && t.switch === switchName && re.test(t.file)
+  );
+  return computeProfileFromSamples(samples);
 }
 
 // FFT windows. Cached by (name, N).
@@ -2860,6 +3125,7 @@ function refreshFftViews() {
 async function init() {
   loadSwitchColors();
   loadSwitchDwells();
+  loadSwitchTemplates();
   loadFftSettings();
   wire();
   if ($("fp-window")) $("fp-window").value = state.fft.window;
