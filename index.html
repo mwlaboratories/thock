@@ -6,8 +6,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Major+Mono+Display&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="icon" href="data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%226%22%20fill%3D%22%230a0a0c%22/%3E%3Ctext%20x%3D%2216%22%20y%3D%2222%22%20text-anchor%3D%22middle%22%20font-family%3D%22monospace%22%20font-size%3D%2218%22%20fill%3D%22%23f5a623%22%3Et%3C/text%3E%3C/svg%3E" />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..600;1,9..144,300..500&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%226%22%20fill%3D%22%230b1220%22/%3E%3Ctext%20x%3D%2216%22%20y%3D%2222%22%20text-anchor%3D%22middle%22%20font-family%3D%22monospace%22%20font-size%3D%2218%22%20fill%3D%22%231849d6%22%3Et%3C/text%3E%3C/svg%3E" />
+<script>
+  /* Light by default; dark only when the user has explicitly toggled it.
+     Applied before first paint so there's no flash of the wrong palette. */
+  (function () {
+    try {
+      if (localStorage.getItem("thock.theme") === "dark") {
+        document.documentElement.classList.add("dark");
+      }
+    } catch (e) {}
+  })();
+</script>
 <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -21,6 +32,9 @@
       <div class="level-fill" id="level-fill"></div>
       <div class="level-db" id="level-db">— dB</div>
     </div>
+    <button id="theme-toggle" class="action ghost small theme-toggle" title="toggle dark mode" aria-label="toggle dark mode">
+      <span class="theme-icon-moon" aria-hidden="true">☾</span><span class="theme-icon-sun" aria-hidden="true">☀</span>
+    </button>
   </div>
 </header>
 
@@ -81,7 +95,7 @@
     <div class="scope-wrap">
       <canvas id="scope" width="800" height="160"></canvas>
       <div class="scope-legend">
-        <span>3 s window · live envelope · trigger marks shown in amber</span>
+        <span>3 s window · live envelope · trigger marks highlighted</span>
       </div>
     </div>
 
@@ -224,6 +238,19 @@
 
 
 <script src="/app.js"></script>
+<script>
+  /* Dark-mode toggle. Flips the root class, persists the choice, then
+     asks app.js to re-read the palette tokens and repaint the canvases. */
+  (function () {
+    var btn = document.getElementById("theme-toggle");
+    if (!btn) return;
+    btn.addEventListener("click", function () {
+      var dark = document.documentElement.classList.toggle("dark");
+      try { localStorage.setItem("thock.theme", dark ? "dark" : "light"); } catch (e) {}
+      if (window.thockApplyTheme) window.thockApplyTheme();
+    });
+  })();
+</script>
 <!-- Vercel Web Analytics — static-site method (no build step / no bundler) -->
 <script defer src="/_vercel/insights/script.js"></script>
 </body>

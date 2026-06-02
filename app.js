@@ -452,13 +452,54 @@ const FFT_N              = 8192;
 const VIZ_WINDOW_MS      = 5000;
 const VIZ_PULSE_SPAN_PX  = 30;
 
-const COL_BG       = "#0a0a0c";
-const COL_GRID     = "#1a1a22";
-const COL_GRID_2   = "#22222c";
-const COL_INK      = "#e8e6e0";
-const COL_INK_DIM  = "#94929e";
-const COL_INK_MUTE = "#54545e";
-const COL_ACCENT   = "#f5a623";
+// Instrument palette — seeded with the dark defaults, then overwritten
+// from the CSS custom properties at boot and on every theme toggle, so
+// the canvases track the same light/dark tokens as the page chrome.
+let COL_BG       = "#0a0a0c";
+let COL_BG2      = "#0d0d11";   // recessed screen ground (fingerprint, label backdrops)
+let COL_GRID     = "#1a1a22";
+let COL_GRID_2   = "#22222c";
+let COL_INK      = "#e8e6e0";
+let COL_INK_DIM  = "#94929e";
+let COL_INK_MUTE = "#54545e";
+let COL_ACCENT   = "#f5a623";
+
+// Read the live values of the chrome tokens off :root. getComputedStyle
+// returns custom properties as authored (#rrggbb), which withAlpha() parses.
+function syncPalette() {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (name, fallback) => {
+    const x = cs.getPropertyValue(name).trim();
+    return /^#[0-9a-fA-F]{6}$/.test(x) ? x : fallback;
+  };
+  COL_BG       = v("--bg", COL_BG);
+  COL_BG2      = v("--bg-2", COL_BG2);
+  COL_GRID     = v("--line", COL_GRID);
+  COL_GRID_2   = v("--line-2", COL_GRID_2);
+  COL_INK      = v("--ink", COL_INK);
+  COL_INK_DIM  = v("--ink-dim", COL_INK_DIM);
+  COL_INK_MUTE = v("--ink-mute", COL_INK_MUTE);
+  COL_ACCENT   = v("--accent", COL_ACCENT);
+}
+
+// Re-sync the palette and repaint the static canvases. The scope and
+// typist canvases redraw every animation frame, so they pick up the new
+// colours on their own; only the on-demand views need an explicit nudge.
+function redrawTheme() {
+  syncPalette();
+  if (state.currentSwitch) {
+    drawFingerprint(state.switchProfiles.get(state.currentSwitch) || null);
+  } else {
+    drawFingerprint(null);
+  }
+  if (state.activeSample && state.activeSample.meta) {
+    drawDetailWave(state.activeSample);
+    drawDetailFFT(state.activeSample);
+    drawDetailSpectrogram(state.activeSample);
+  }
+  renderTiles();
+}
+window.thockApplyTheme = redrawTheme;
 
 
 // ============== audio engine =======================================
@@ -1818,7 +1859,7 @@ function drawMini(c, t) {
   }
   if (any) g.stroke();
   const onsetX = Math.floor(W * ONSET_AT);
-  g.strokeStyle = "rgba(245,166,35,0.5)";
+  g.strokeStyle = withAlpha(COL_ACCENT, 0.5);
   g.beginPath(); g.moveTo(onsetX, 0); g.lineTo(onsetX, H); g.stroke();
 }
 
@@ -1878,7 +1919,7 @@ function drawDetailWave(t) {
       for (let bx = W - 1; bx >= 0 && valid[bx]; bx--) g.lineTo(bx, bots[bx]);
       g.closePath();
     }
-    g.fillStyle = "rgba(232,230,224,0.14)"; g.fill();
+    g.fillStyle = withAlpha(COL_INK, 0.14); g.fill();
     g.strokeStyle = COL_INK; g.lineWidth = 1 * dpr;
     g.beginPath();
     let s = false;
@@ -1899,7 +1940,7 @@ function drawDetailWave(t) {
   g.strokeStyle = COL_GRID_2;
   g.beginPath(); g.moveTo(0, half); g.lineTo(W, half); g.stroke();
   const onsetX = Math.floor(W * ONSET_AT);
-  g.strokeStyle = "rgba(245,166,35,0.55)";
+  g.strokeStyle = withAlpha(COL_ACCENT, 0.55);
   g.beginPath(); g.moveTo(onsetX, 0); g.lineTo(onsetX, H); g.stroke();
 
   // time-from-onset axis. Pick the *largest* tick spacing from a 1-2-5 series
@@ -1917,7 +1958,7 @@ function drawDetailWave(t) {
   const minorMs = tickMs / (tickMs % 2 === 0 ? 2 : 1);
   const pxPerMs = W / windowMs;
   g.fillStyle = COL_INK_MUTE;
-  g.font = `${10 * dpr}px "Geist Mono", monospace`;
+  g.font = `${10 * dpr}px "IBM Plex Mono", monospace`;
   for (let ms = -Math.ceil(preMs / minorMs) * minorMs; ms <= windowMs - preMs; ms += minorMs) {
     const x = onsetX + ms * pxPerMs;
     if (x < 0 || x > W) continue;
@@ -1932,8 +1973,8 @@ function drawDetailWave(t) {
   // plain ONSET for silent linears.
   const subs = t.meta.subs || [];
   const clicky = subs.length >= 2;
-  g.fillStyle = "rgba(245,166,35,0.95)";
-  g.font = `${9 * dpr}px "Geist Mono", monospace`;
+  g.fillStyle = withAlpha(COL_ACCENT, 0.95);
+  g.font = `${9 * dpr}px "IBM Plex Mono", monospace`;
   g.fillText(clicky ? "DOWN" : "ONSET", onsetX + 4 * dpr, 12 * dpr);
 
   // additional sub-events (UP click, and any further bounces). Each gets
@@ -1942,12 +1983,12 @@ function drawDetailWave(t) {
     for (let i = 1; i < subs.length; i++) {
       const sx = ((subs[i].start - start) / length) * W;
       if (sx < 0 || sx > W) continue;
-      g.strokeStyle = "rgba(245,166,35,0.55)";
+      g.strokeStyle = withAlpha(COL_ACCENT, 0.55);
       g.lineWidth = 1 * dpr;
       g.setLineDash([4 * dpr, 4 * dpr]);
       g.beginPath(); g.moveTo(sx, 16 * dpr); g.lineTo(sx, H - 18 * dpr); g.stroke();
       g.setLineDash([]);
-      g.fillStyle = "rgba(245,166,35,0.95)";
+      g.fillStyle = withAlpha(COL_ACCENT, 0.95);
       const label = i === 1 ? "UP" : `+${i}`;
       g.fillText(label, sx + 4 * dpr, 12 * dpr);
     }
@@ -2060,7 +2101,7 @@ function drawDetailSpectrogram(t) {
 
   // axes — frequency on left, time on bottom, aligned to the waveform
   g.fillStyle = "rgba(232,230,224,0.9)";
-  g.font = `${10 * dpr}px "Geist Mono", monospace`;
+  g.font = `${10 * dpr}px "IBM Plex Mono", monospace`;
   const nyquist = sr / 2;
   // freq labels
   [1000, 5000, 10000, 15000, 20000].forEach((f) => {
@@ -2075,7 +2116,7 @@ function drawDetailSpectrogram(t) {
 
   // onset line (matches the waveform's orange marker)
   const onsetX = Math.floor(W * ONSET_AT);
-  g.strokeStyle = "rgba(245,166,35,0.7)";
+  g.strokeStyle = withAlpha(COL_ACCENT, 0.7);
   g.lineWidth = 1 * dpr;
   g.beginPath(); g.moveTo(onsetX, 0); g.lineTo(onsetX, H); g.stroke();
 
@@ -2173,7 +2214,7 @@ function drawFFTAxes(g, c, sr) {
     g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
   }
   g.fillStyle = COL_INK_MUTE;
-  g.font = `${10 * dpr}px "Geist Mono", monospace`;
+  g.font = `${10 * dpr}px "IBM Plex Mono", monospace`;
   labels.forEach((f) => {
     if (f > sr / 2) return;
     const x = freqToX(f, sr, W);
@@ -2194,14 +2235,14 @@ function drawFingerprint(profile) {
   }
   const dpr = sizeCanvas(c);
   const g = c.getContext("2d");
-  g.fillStyle = "#0d0d11"; g.fillRect(0, 0, c.width, c.height);
+  g.fillStyle = COL_BG2; g.fillRect(0, 0, c.width, c.height);
 
   const color = state.currentSwitch ? colorForSwitch(state.currentSwitch) : COL_ACCENT;
   $("fp-name").style.color = color;
 
   if (!profile || !profile.spectrum) {
     g.fillStyle = COL_INK_MUTE;
-    g.font = `${12 * dpr}px "Geist Mono", monospace`;
+    g.font = `${12 * dpr}px "IBM Plex Mono", monospace`;
     g.fillText("no samples yet", 16 * dpr, c.height / 2);
     return;
   }
@@ -2251,13 +2292,13 @@ function drawFingerprint(profile) {
 
   // resonant peaks — these are the distinguishing marks of the switch
   if (profile.peaks && profile.peaks.length) {
-    g.font = `${10 * dpr}px "Geist Mono", monospace`;
+    g.font = `${10 * dpr}px "IBM Plex Mono", monospace`;
     g.textBaseline = "alphabetic";
     for (const p of profile.peaks) {
       const px = x4f(p.freq);
       const py = y4db(20 * Math.log10(p.mag / (maxMag || 1) + 1e-9));
       // marker — small ringed dot
-      g.fillStyle = "#0d0d11";
+      g.fillStyle = COL_BG2;
       g.beginPath(); g.arc(px, py, 4 * dpr, 0, 2 * Math.PI); g.fill();
       g.strokeStyle = color; g.lineWidth = 1.5 * dpr;
       g.beginPath(); g.arc(px, py, 4 * dpr, 0, 2 * Math.PI); g.stroke();
@@ -2279,7 +2320,7 @@ function drawFingerprint(profile) {
       const labelY = Math.max(14 * dpr, py - 8 * dpr);
       const tw = g.measureText(label).width;
       // small backdrop for legibility
-      g.fillStyle = "rgba(13, 13, 17, 0.85)";
+      g.fillStyle = withAlpha(COL_BG2, 0.85);
       g.fillRect(px - tw / 2 - 3 * dpr, labelY - 11 * dpr, tw + 6 * dpr, 13 * dpr);
       g.fillStyle = color;
       g.fillText(label, px - tw / 2, labelY - 1 * dpr);
@@ -2659,7 +2700,7 @@ function drawTypingText() {
     }
     const now = performance.now();
     state.typedChars = state.typedChars.filter((ch) => (now - ch.t) < VIZ_WINDOW_MS);
-    g.font = `${20 * dpr}px "Geist Mono", monospace`;
+    g.font = `${20 * dpr}px "IBM Plex Mono", monospace`;
     g.textAlign = "center";
     g.textBaseline = "middle";
     // The keystroke pulse is drawn with mini[0] (the down-click — the
@@ -2673,8 +2714,8 @@ function drawTypingText() {
       const fade = 1 - age * 0.55;
       const isSpace = ch.c === " ";
       g.fillStyle = isSpace
-        ? `rgba(148,146,158,${fade * 0.5})`
-        : `rgba(232,230,224,${fade})`;
+        ? withAlpha(COL_INK_DIM, fade * 0.5)
+        : withAlpha(COL_INK, fade);
       g.fillText(isSpace ? "·" : ch.c, x, H / 2 + 1 * dpr);
     }
     requestAnimationFrame(frame);
@@ -2724,7 +2765,7 @@ function drawTypingViz() {
     g.strokeStyle = COL_GRID_2;
     g.beginPath(); g.moveTo(0, half); g.lineTo(W, half); g.stroke();
     g.fillStyle = COL_INK_MUTE;
-    g.font = `${10 * dpr}px "Geist Mono", monospace`;
+    g.font = `${10 * dpr}px "IBM Plex Mono", monospace`;
     for (let s = 1; s <= 5; s++) {
       const x = W - (s / 5) * W;
       g.fillText(`-${s}s`, x + 4 * dpr, H - 6 * dpr);
@@ -2838,12 +2879,12 @@ function renderScope() {
 
     const thr = state.autoThreshold;
     const noise = state.floorEMA;
-    g.strokeStyle = "rgba(245,166,35,0.5)";
+    g.strokeStyle = withAlpha(COL_ACCENT, 0.5);
     g.beginPath();
     g.moveTo(0, half - thr * half); g.lineTo(W, half - thr * half);
     g.moveTo(0, half + thr * half); g.lineTo(W, half + thr * half);
     g.stroke();
-    g.strokeStyle = "rgba(148,146,158,0.35)";
+    g.strokeStyle = withAlpha(COL_INK_DIM, 0.35);
     g.beginPath();
     g.moveTo(0, half - noise * half); g.lineTo(W, half - noise * half);
     g.moveTo(0, half + noise * half); g.lineTo(W, half + noise * half);
@@ -3320,6 +3361,7 @@ function refreshFftViews() {
 }
 
 async function init() {
+  syncPalette();
   loadSwitchColors();
   loadSwitchDwells();
   loadSwitchTemplates();

@@ -1,27 +1,62 @@
 /* ================================================================
-   thock — a measurement-instrument aesthetic.
-   Dark ground, single warm amber accent, ink-on-paper hierarchy.
-   Major Mono Display for the wordmark, Geist Mono everywhere else.
+   thock — engineering-publication aesthetic, shared with mwlabs.be.
+   Cool paper ground, deep ink, instrument-blue accent. Fraunces for
+   display, IBM Plex Sans for body, IBM Plex Mono for technical labels
+   and numerics. The dark-mode toggle swaps the palette tokens below;
+   the instrument canvases (app.js) read the same tokens and repaint.
    ================================================================ */
 
 :root {
-  --bg:        #0a0a0c;
-  --bg-2:      #0d0d11;
-  --surface:   #13131a;
-  --surface-2: #1a1a22;
-  --line:      #232330;
-  --line-2:    #2e2e3c;
-  --ink:       #e8e6e0;
-  --ink-dim:   #94929e;
-  --ink-mute:  #54545e;
-  --accent:    #f5a623;
-  --accent-2:  #ffb945;
-  --accent-soft: rgba(245, 166, 35, 0.18);
-  --accent-faint: rgba(245, 166, 35, 0.08);
-  --danger:    #d94c54;
+  /* light — engineering paper (the mwlabs.be default) */
+  --bg:        #f8fafc;
+  --bg-2:      #eef2f8;
+  --surface:   #ffffff;
+  --surface-2: #f1f4fa;
+  --line:      #dbe0ea;
+  --line-2:    #c5cdda;
+  --ink:       #0b1220;
+  --ink-dim:   #475569;
+  --ink-mute:  #7e8aa0;
+  --accent:    #1849d6;
+  --accent-2:  #2f5cf0;
+  --accent-soft:  rgba(24, 73, 214, 0.16);
+  --accent-faint: rgba(24, 73, 214, 0.07);
+  --ok:        #1a8a4a;
+  --danger:    #c4302b;
+  --grid:      #e9eef5;
+  --scrim:     rgba(11, 18, 32, 0.45);
+  --shadow:    rgba(11, 18, 32, 0.18);
+
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-body:    "IBM Plex Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono:    "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Mono", monospace;
 
   --radius: 2px;
   --pane-padding: 18px;
+  color-scheme: light;
+}
+
+html.dark {
+  /* dark — same family: ink ground, brighter instrument-blue */
+  --bg:        #0b1220;
+  --bg-2:      #0d1526;
+  --surface:   #131c30;
+  --surface-2: #1a2538;
+  --line:      #273349;
+  --line-2:    #36445d;
+  --ink:       #e8edf5;
+  --ink-dim:   #9aa6ba;
+  --ink-mute:  #5f6d82;
+  --accent:    #6b8dff;
+  --accent-2:  #88a4ff;
+  --accent-soft:  rgba(107, 141, 255, 0.20);
+  --accent-faint: rgba(107, 141, 255, 0.10);
+  --ok:        #5bd98a;
+  --danger:    #e0726a;
+  --grid:      #182640;
+  --scrim:     rgba(3, 6, 14, 0.66);
+  --shadow:    rgba(0, 0, 0, 0.6);
+  color-scheme: dark;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -30,33 +65,48 @@ html, body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font-family: "Geist Mono", ui-monospace, "JetBrains Mono", monospace;
-  font-size: 13px;
-  line-height: 1.45;
-  font-feature-settings: "ss01", "ss02";
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.55;
+  font-feature-settings: "ss02", "zero", "cv11";
+  font-variant-numeric: lining-nums;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  transition: background-color 0.28s ease, color 0.28s ease;
 }
 
-/* atmospheric dot field — barely visible texture so the canvas feels lit */
+/* graph-paper grid — the datasheet / lab-notebook ground from mwlabs,
+   fading out toward the edges. */
 body::before {
   content: "";
   position: fixed; inset: 0;
-  background-image: radial-gradient(rgba(255,255,255,0.022) 1px, transparent 1px);
-  background-size: 28px 28px;
-  pointer-events: none;
   z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-position: -1px -1px;
+  -webkit-mask-image: radial-gradient(ellipse 85% 70% at 50% 25%, #000 0%, rgba(0,0,0,0.45) 55%, transparent 100%);
+  mask-image: radial-gradient(ellipse 85% 70% at 50% 25%, #000 0%, rgba(0,0,0,0.45) 55%, transparent 100%);
 }
 
-/* a single hairline beam down the page centerline — pure decoration */
-body::after {
-  content: "";
-  position: fixed;
-  top: 0; bottom: 0;
-  left: 50%;
-  width: 1px;
-  background: linear-gradient(to bottom, transparent, rgba(245,166,35,0.04) 30%, rgba(245,166,35,0.04) 70%, transparent);
-  pointer-events: none;
-  z-index: 0;
+/* technical labels, eyebrows, and numeric readouts use the mono face —
+   the mwlabs "eyebrow" convention. */
+.pane-head h2, .pane-status, .fp-label, .fp-meta, .block-label,
+.capture-meta dt, .capture-meta dd, .samples-head > span, .switch-empty,
+.scope-legend, .level-db, .dialog-hint, .guided-phase-num,
+.guided-card-status, .guided-card-counter, .preset-count,
+.switch-tile .ct, .tile .label, .typist-switches:empty::before,
+#status-text, .param {
+  font-family: var(--font-mono);
 }
+
+/* theme toggle — sun/moon glyph swap */
+.theme-toggle { line-height: 1; padding: 5px 9px; font-size: 0.95rem; }
+.theme-toggle .theme-icon-sun { display: none; }
+html.dark .theme-toggle .theme-icon-sun { display: inline; }
+html.dark .theme-toggle .theme-icon-moon { display: none; }
 
 /* ----------------------------- topbar ----------------------------- */
 
@@ -73,9 +123,11 @@ body::after {
 
 .topbar h1 {
   margin: 0;
-  font-family: "Major Mono Display", ui-monospace, monospace;
-  font-size: 2.6rem;
-  letter-spacing: 0.04em;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 2.1rem;
+  letter-spacing: -0.02em;
+  font-feature-settings: "zero" on;
   color: var(--ink);
   line-height: 1;
 }
@@ -347,7 +399,7 @@ canvas {
 .guided-modal {
   position: fixed;
   inset: 0;
-  background: rgba(5, 5, 8, 0.84);
+  background: var(--scrim);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
@@ -361,7 +413,7 @@ canvas {
   padding: 32px 40px 28px;
   max-width: 520px;
   min-width: 380px;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7);
+  box-shadow: 0 30px 80px var(--shadow);
   border-radius: var(--radius);
   text-align: center;
 }
@@ -373,14 +425,17 @@ canvas {
 }
 .guided-card h3 {
   margin: 0;
-  font-family: "Major Mono Display", ui-monospace, monospace;
-  font-size: 1.05rem;
-  color: var(--accent);
-  letter-spacing: 0.06em;
+  font-family: var(--font-display);
+  font-variation-settings: "SOFT" 100, "opsz" 36;
+  font-weight: 400;
+  font-size: 1.4rem;
+  color: var(--ink);
+  letter-spacing: -0.01em;
 }
 .guided-card h3 #guided-card-switch {
-  color: var(--ink);
-  letter-spacing: 0.02em;
+  color: var(--accent);
+  font-style: italic;
+  letter-spacing: 0;
 }
 .guided-card .guided-phase-num {
   color: var(--ink-mute);
@@ -420,7 +475,7 @@ canvas {
 }
 .guided-stage[data-step="press"] {
   border-color: var(--accent);
-  background: rgba(245, 166, 35, 0.06);
+  background: var(--accent-faint);
 }
 .guided-stage[data-step="press"] .guided-stage-icon,
 .guided-stage[data-step="press"] .guided-stage-label {
@@ -433,18 +488,18 @@ canvas {
   color: var(--ink);
 }
 .guided-stage[data-step="release"] {
-  border-color: #7dd87d;
-  background: rgba(125, 216, 125, 0.06);
+  border-color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 8%, transparent);
 }
 .guided-stage[data-step="release"] .guided-stage-icon,
 .guided-stage[data-step="release"] .guided-stage-label {
-  color: #7dd87d;
+  color: var(--ok);
 }
 .guided-stage[data-step="got"] {
-  border-color: #7dd87d;
+  border-color: var(--ok);
 }
 .guided-stage[data-step="got"] .guided-stage-icon {
-  color: #7dd87d;
+  color: var(--ok);
   transform: scale(1.1);
 }
 .guided-stage[data-step="ready"] .guided-stage-icon {
@@ -578,12 +633,12 @@ canvas {
 }
 .switch-tile.active {
   background: var(--c);
-  color: #0a0a0c;
+  color: var(--bg);
   border-color: var(--c);
   border-left-color: var(--c);
 }
-.switch-tile.active .ct      { color: #0a0a0c; opacity: 0.65; }
-.switch-tile.active .swatch  { border-color: #0a0a0c; }
+.switch-tile.active .ct      { color: var(--bg); opacity: 0.65; }
+.switch-tile.active .swatch  { border-color: var(--bg); }
 .switch-tile.pulse::after {
   content: "";
   position: absolute;
@@ -621,7 +676,7 @@ canvas {
   gap: 6px;
   z-index: 200;
   border-radius: var(--radius);
-  box-shadow: 0 12px 32px rgba(0,0,0,0.7);
+  box-shadow: 0 12px 32px var(--shadow);
 }
 .color-swatch {
   width: 22px;
@@ -660,9 +715,11 @@ canvas {
   color: var(--ink-mute);
 }
 .fp-name {
-  font-family: "Major Mono Display", ui-monospace, monospace;
-  font-size: 1.7rem;
-  letter-spacing: 0.04em;
+  font-family: var(--font-display);
+  font-variation-settings: "SOFT" 100, "opsz" 144;
+  font-weight: 400;
+  font-size: 2rem;
+  letter-spacing: -0.01em;
   color: var(--accent);
   line-height: 1;
 }
@@ -838,18 +895,21 @@ dialog {
   padding: 26px 28px;
   min-width: 460px;
   max-width: 720px;
-  box-shadow: 0 18px 60px rgba(0,0,0,0.7);
+  box-shadow: 0 18px 60px var(--shadow);
 }
 dialog::backdrop {
-  background: rgba(0, 0, 0, 0.78);
+  background: var(--scrim);
   backdrop-filter: blur(3px);
 }
 dialog h3 {
   margin: 0 0 14px;
-  font-size: 0.95rem;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--accent);
+  font-family: var(--font-display);
+  font-variation-settings: "SOFT" 100, "opsz" 36;
+  font-weight: 400;
+  font-size: 1.5rem;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: var(--ink);
 }
 dialog input {
   background: var(--surface-2);
@@ -882,7 +942,7 @@ dialog input:focus { outline: none; border-color: var(--accent); }
 .storage-gate {
   position: fixed;
   inset: 0;
-  background: rgba(5, 5, 8, 0.86);
+  background: var(--scrim);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
@@ -895,15 +955,17 @@ dialog input:focus { outline: none; border-color: var(--accent); }
   border: 1px solid var(--line-2);
   padding: 28px 32px;
   max-width: 460px;
-  box-shadow: 0 30px 80px rgba(0,0,0,0.7);
+  box-shadow: 0 30px 80px var(--shadow);
   border-radius: var(--radius);
 }
 .storage-gate-card h3 {
   margin: 0 0 12px;
-  font-family: "Major Mono Display", ui-monospace, monospace;
-  font-size: 1.4rem;
-  color: var(--accent);
-  letter-spacing: 0.04em;
+  font-family: var(--font-display);
+  font-variation-settings: "SOFT" 100, "opsz" 36;
+  font-weight: 400;
+  font-size: 1.7rem;
+  color: var(--ink);
+  letter-spacing: -0.01em;
 }
 .storage-gate-card p { margin: 0 0 12px; color: var(--ink); font-size: 0.85rem; line-height: 1.55; }
 .storage-gate-card p.dim { color: var(--ink-dim); }
