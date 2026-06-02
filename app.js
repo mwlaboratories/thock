@@ -3412,6 +3412,155 @@ async function togglePlayAll() {
   if (btn) btn.textContent = "▶ play all";
 }
 
+// ----- export current switch as ZIP (for contribution emails) ------
+
+// CRC-32 (IEEE 802.3 polynomial). Built once, ~256 entries. Used by
+// the ZIP writer per file.
+const _CRC32_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c;
+  }
+  return t;
+})();
+function _crc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = _CRC32_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+// Build an uncompressed (STORED) ZIP from a list of {name, data}.
+// Pure byte assembly — no library needed. STORED is fine because
+// our payload is WAV/FLAC (already poorly-compressible) and the
+// recipient just runs bundle_library.py on it anyway.
+function _buildZipStored(files) {
+  const enc = new TextEncoder();
+  const localChunks = [];
+  const centralChunks = [];
+  let offset = 0;
+
+  for (const f of files) {
+    const nameBytes = enc.encode(f.name);
+    const data = f.data instanceof Uint8Array ? f.data : new Uint8Array(f.data);
+    const crc = _crc32(data);
+    const size = data.length;
+
+    // Local file header (30 bytes + name + data)
+    const local = new Uint8Array(30 + nameBytes.length);
+    const lv = new DataView(local.buffer);
+    lv.setUint32(0, 0x04034b50, true);    // PK\x03\x04
+    lv.setUint16(4, 20, true);            // version needed
+    lv.setUint16(6, 0, true);             // flags
+    lv.setUint16(8, 0, true);             // method = STORED
+    lv.setUint16(10, 0, true);            // mod time
+    lv.setUint16(12, 0, true);            // mod date
+    lv.setUint32(14, crc, true);
+    lv.setUint32(18, size, true);         // compressed size
+    lv.setUint32(22, size, true);         // uncompressed size
+    lv.setUint16(26, nameBytes.length, true);
+    lv.setUint16(28, 0, true);            // extra len
+    local.set(nameBytes, 30);
+    localChunks.push(local, data);
+
+    // Central directory record (46 bytes + name)
+    const cd = new Uint8Array(46 + nameBytes.length);
+    const cv = new DataView(cd.buffer);
+    cv.setUint32(0, 0x02014b50, true);    // PK\x01\x02
+    cv.setUint16(4, 20, true);            // version made by
+    cv.setUint16(6, 20, true);            // version needed
+    cv.setUint16(8, 0, true);
+    cv.setUint16(10, 0, true);
+    cv.setUint16(12, 0, true);
+    cv.setUint16(14, 0, true);
+    cv.setUint32(16, crc, true);
+    cv.setUint32(20, size, true);
+    cv.setUint32(24, size, true);
+    cv.setUint16(28, nameBytes.length, true);
+    cv.setUint16(30, 0, true);
+    cv.setUint16(32, 0, true);            // comment len
+    cv.setUint16(34, 0, true);            // disk number
+    cv.setUint16(36, 0, true);            // internal attrs
+    cv.setUint32(38, 0, true);            // external attrs
+    cv.setUint32(42, offset, true);       // local header offset
+    cd.set(nameBytes, 46);
+    centralChunks.push(cd);
+
+    offset += local.length + data.length;
+  }
+
+  const cdSize = centralChunks.reduce((s, c) => s + c.length, 0);
+  const cdOffset = offset;
+  const end = new Uint8Array(22);
+  const ev = new DataView(end.buffer);
+  ev.setUint32(0, 0x06054b50, true);      // PK\x05\x06
+  ev.setUint16(4, 0, true);               // disk
+  ev.setUint16(6, 0, true);               // disk with cd
+  ev.setUint16(8, files.length, true);    // entries on this disk
+  ev.setUint16(10, files.length, true);   // total entries
+  ev.setUint32(12, cdSize, true);
+  ev.setUint32(16, cdOffset, true);
+  ev.setUint16(20, 0, true);              // comment len
+
+  const total = offset + cdSize + 22;
+  const out = new Uint8Array(total);
+  let pos = 0;
+  for (const c of localChunks)   { out.set(c, pos); pos += c.length; }
+  for (const c of centralChunks) { out.set(c, pos); pos += c.length; }
+  out.set(end, pos);
+  return out;
+}
+
+async function exportCurrentSwitch() {
+  const sw = state.currentSwitch;
+  if (!sw) { setStatus("no switch selected"); return; }
+  const switchEntry = state.switches.find((s) => s.name === sw);
+  if (!switchEntry || !switchEntry.count) { setStatus("nothing to export — no samples"); return; }
+
+  const btn = $("export-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "packing…"; }
+
+  try {
+    const files = [];
+    // 1) the user's filled-in metadata so the recipient doesn't have
+    //    to re-enter name / type / weight / family.
+    const meta = state.switchMeta.get(sw) || {};
+    const metaOut = {
+      name: meta.name || sw,
+      family: meta.family || "",
+      description: meta.description || "",
+      color: colorForSwitch(sw),
+    };
+    files.push({ name: `${sw}/meta.json`, data: new TextEncoder().encode(JSON.stringify(metaOut, null, 2) + "\n") });
+
+    // 2) every WAV / FLAC on disk
+    for (let i = 0; i < switchEntry.samples.length; i++) {
+      const fname = switchEntry.samples[i];
+      const ab = await fsReadSample(sw, fname);
+      files.push({ name: `${sw}/${fname}`, data: new Uint8Array(ab) });
+      if (btn && (i % 4 === 0)) btn.textContent = `packing · ${i + 1}/${switchEntry.samples.length}`;
+    }
+
+    const zipBytes = _buildZipStored(files);
+    const blob = new Blob([zipBytes], { type: "application/zip" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${sw}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setStatus(`exported ${sw}.zip · ${(zipBytes.length / 1024).toFixed(0)} KB · ${switchEntry.samples.length} samples + meta.json`);
+  } catch (e) {
+    console.error("export failed", e);
+    setStatus("export failed: " + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "export"; }
+  }
+}
+
 async function deleteActive() {
   if (!state.activeSample) return;
   if (!confirm(`remove ${state.activeSample.file}?`)) return;
@@ -3795,6 +3944,9 @@ function wire() {
   $("delete-all-btn").addEventListener("click", () => deleteAllInSwitch());
   $("play-all-btn").addEventListener("click", () => {
     togglePlayAll().catch((e) => { console.error(e); setStatus("play-all failed: " + e.message); });
+  });
+  $("export-btn").addEventListener("click", () => {
+    exportCurrentSwitch().catch((e) => { console.error(e); setStatus("export failed: " + e.message); });
   });
   $("detail-play").addEventListener("click", () => state.activeSample && playSampleNow(state.activeSample));
   $("detail-delete").addEventListener("click", () => deleteActive());
