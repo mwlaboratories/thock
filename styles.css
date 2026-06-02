@@ -476,12 +476,11 @@ main {
   margin-bottom: 12px;
 }
 .scope-legend {
-  position: absolute;
-  bottom: 4px;
-  right: 6px;
   color: var(--ink-mute);
   font-size: 0.65rem;
   letter-spacing: 0.1em;
+  text-align: right;
+  padding: 4px 2px 0;
 }
 
 canvas {
@@ -1167,58 +1166,6 @@ dialog input:focus { outline: none; border-color: var(--accent); }
   margin: 0 0 14px;
 }
 .capture-pane .hint strong { color: var(--accent); font-weight: 500; }
-
-/* ---------- storage gate ---------- */
-
-.storage-gate {
-  position: fixed;
-  inset: 0;
-  background: var(--scrim);
-  backdrop-filter: blur(4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 500;
-}
-.storage-gate.hidden { display: none; }
-.storage-gate-card {
-  background: var(--surface);
-  border: 1px solid var(--line-2);
-  padding: 28px 32px;
-  max-width: 460px;
-  box-shadow: 0 30px 80px var(--shadow);
-  border-radius: var(--radius);
-}
-.storage-gate-card h3 {
-  margin: 0 0 12px;
-  font-family: var(--font-display);
-  font-variation-settings: "SOFT" 100, "opsz" 36;
-  font-weight: 400;
-  font-size: 1.7rem;
-  color: var(--ink);
-  letter-spacing: -0.01em;
-}
-.storage-gate-card p { margin: 0 0 12px; color: var(--ink); font-size: 0.85rem; line-height: 1.55; }
-.storage-gate-card p.dim { color: var(--ink-dim); }
-.storage-gate-card p.small { font-size: 0.7rem; color: var(--ink-mute); margin-top: 14px; }
-.storage-gate-card code {
-  background: var(--surface-2);
-  padding: 1px 6px;
-  border-radius: 2px;
-  color: var(--ink);
-  font-family: inherit;
-}
-.storage-gate-card button { margin-top: 6px; }
-.storage-gate-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
-.storage-gate-card strong { color: var(--accent); font-weight: 500; }
-.storage-gate-card #storage-pick.hidden,
-.storage-gate-card #storage-opfs.hidden { display: none; }
-
-#storage-btn.needs-folder {
-  background: var(--accent);
-  color: var(--bg);
-  border-color: var(--accent);
-}
 
 /* responsive minimal — pile panes if narrow */
 @media (max-width: 1100px) {

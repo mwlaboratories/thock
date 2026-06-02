@@ -26,7 +26,6 @@
 <header class="topbar">
   <h1>t<span>ho</span>ck</h1>
   <div class="topbar-status">
-    <button id="storage-btn" class="action ghost small" title="storage folder">no folder</button>
     <span id="status-text">awaiting microphone</span>
     <div class="level-meter">
       <div class="level-fill" id="level-fill"></div>
@@ -37,23 +36,6 @@
     </button>
   </div>
 </header>
-
-<div id="storage-gate" class="storage-gate hidden">
-  <div class="storage-gate-card">
-    <h3>choose where samples live</h3>
-    <p>thock writes WAV files locally. Nothing is uploaded.</p>
-    <p class="dim" id="storage-gate-sub">previously: <span id="storage-prev-name">—</span></p>
-    <div class="storage-gate-actions">
-      <button id="storage-pick" class="action primary">choose folder</button>
-      <button id="storage-opfs" class="action ghost">use browser storage</button>
-    </div>
-    <p class="dim small" id="storage-explain">
-      <strong>folder</strong> — a real directory on your disk; files are visible to other tools.
-      <br/>
-      <strong>browser storage</strong> — private to this site; works in any modern browser.
-    </p>
-  </div>
-</div>
 
 <div id="guided-modal" class="guided-modal hidden" role="dialog" aria-modal="true" aria-labelledby="guided-title">
   <div class="guided-card">

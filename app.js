@@ -1722,6 +1722,7 @@ async function selectSwitch(name) {
   updateTypingButtons();
   // primary button reflects "calibrated yet?" — flip to calibrate-or-arm
   refreshPrimary();
+  refreshExportVisibility();
   if ($("meta-switch")) $("meta-switch").textContent = displayName(name);
   setStatus(`switch · ${displayName(name)}`);
   await loadSwitchSamples(name);
@@ -1731,6 +1732,7 @@ async function loadSwitchSamples(name) {
   const sw = state.switches.find((s) => s.name === name);
   $("fp-name").textContent = displayName(name);
   renderFingerprintTags(name);
+  refreshExportVisibility();
   if (!sw) {
     state.switchSamples = [];
     renderTiles();
@@ -3501,6 +3503,19 @@ function _buildZipStored(files) {
   return out;
 }
 
+// Library-imported switches don't get an export button — the value
+// of the curated library is the library itself; trivial in-app
+// re-export would undercut that. User-created switches stay
+// exportable so people can contribute their own recordings back.
+function refreshExportVisibility() {
+  const btn = $("export-btn");
+  if (!btn) return;
+  const sw = state.currentSwitch;
+  const meta = sw ? state.switchMeta.get(sw) : null;
+  const fromLibrary = meta && meta.source === "library";
+  btn.classList.toggle("hidden", !!fromLibrary);
+}
+
 async function exportCurrentSwitch() {
   const sw = state.currentSwitch;
   if (!sw) { setStatus("no switch selected"); return; }
@@ -3771,6 +3786,7 @@ async function importSelectedFromLibrary() {
           name: preset.name || preset.id,
           family: preset.family || "",
           description: preset.description || "",
+          source: "library",  // hides export button — see refreshExportVisibility
         });
         if (!firstImported) firstImported = preset.id;
       } catch (e) {
@@ -4003,33 +4019,23 @@ function wire() {
     _commitGuidedSession().catch((e) => { console.error(e); setStatus("save failed: " + e.message); });
   });
 
-  $("storage-btn").addEventListener("click", () => showStorageGate(state.storageName));
-  $("storage-pick").addEventListener("click", () => {
-    pickStorage().then(setupAfter)
-      .catch((e) => { if (e.name !== "AbortError") setStatus("picker failed: " + e.message); });
-  });
-  $("storage-opfs").addEventListener("click", () => {
-    useOpfsStorage().then(setupAfter)
-      .catch((e) => setStatus("browser storage failed: " + e.message));
-  });
+  // Storage UI removed — OPFS is auto-initialized at boot. No buttons
+  // to wire here. pickStorage / useOpfsStorage are still exported for
+  // internal use (tryResumeStorage for legacy disk-folder handles, and
+  // init's auto-OPFS fallback).
 }
 
-function showStorageGate(prevName) {
-  $("storage-gate").classList.remove("hidden");
-  $("storage-prev-name").textContent = prevName || "—";
-  $("storage-gate-sub").style.display = prevName ? "" : "none";
-  // hide whichever backend this browser doesn't expose
-  $("storage-pick").classList.toggle("hidden", !pickerSupported());
-  $("storage-opfs").classList.toggle("hidden", !opfsSupported());
-  $("storage-btn").textContent = "no folder";
-  $("storage-btn").classList.add("needs-folder");
+// Storage gate UI is gone — thock auto-uses OPFS on init. These two
+// shims keep older callers (importSelectedFromLibrary, arm, etc.)
+// from throwing when they reach for the (no-longer-existing) gate.
+async function showStorageGate(_prevName) {
+  // If we somehow lost the storage handle, transparently re-init OPFS.
+  if (!state.storageHandle && opfsSupported()) {
+    try { await useOpfsStorage(); }
+    catch (e) { setStatus("storage unavailable: " + e.message); }
+  }
 }
-
-function hideStorageGate() {
-  $("storage-gate").classList.add("hidden");
-  $("storage-btn").textContent = state.storageName || "folder";
-  $("storage-btn").classList.remove("needs-folder");
-}
+function hideStorageGate() { /* no-op */ }
 
 function refreshFftViews() {
   if (state.currentSwitch) {
@@ -4064,24 +4070,23 @@ async function init() {
     setStatus("no storage backend available in this browser");
     return;
   }
+  // Storage: prefer resuming whatever the user had before; otherwise
+  // silently initialize OPFS. The folder-picker option was dropped —
+  // one storage mode, no decision required from the user. Existing
+  // disk-folder handles still resume cleanly when permission allows.
   const resumed = await tryResumeStorage();
   if (resumed === true) {
-    hideStorageGate();
-    setStatus(`storage · ${state.storageName} · click 'enable mic' to begin`);
-  } else if (resumed && resumed.needsGesture) {
-    showStorageGate(resumed.handle.name);
-    setStatus("previous folder needs permission — click 'choose folder'");
-    // reusing the same handle is fine on the next user gesture
-    $("storage-pick").addEventListener("click", async function once() {
-      $("storage-pick").removeEventListener("click", once, true);
-      try { await requestStoragePermission(resumed.handle); }
-      catch (_) { return; }
-      await refreshSwitches();
-      if (state.currentSwitch) await loadSwitchSamples(state.currentSwitch);
-    }, { once: true, capture: true });
+    setStatus(`storage ready · click 'enable mic' to begin`);
   } else {
-    showStorageGate(null);
-    setStatus("choose where samples live to begin");
+    // resumed === false (nothing stored) OR { needsGesture } (we'd
+    // need a click to re-grant disk-folder permission). Either way,
+    // fall back to OPFS — it's the new default.
+    if (opfsSupported()) {
+      try { await useOpfsStorage(); setStatus(`storage ready · click 'enable mic' to begin`); }
+      catch (e) { setStatus("storage unavailable: " + e.message); }
+    } else {
+      setStatus("no storage available in this browser");
+    }
   }
 
   await refreshSwitches();
@@ -4117,11 +4122,13 @@ async function syncMetaFromLibrary() {
         name: p.name || p.id,
         family: p.family || "",
         description: p.description || "",
+        source: "library",
       };
       if (!current
           || current.name !== fresh.name
           || current.family !== fresh.family
-          || current.description !== fresh.description) {
+          || current.description !== fresh.description
+          || current.source !== "library") {
         state.switchMeta.set(p.id, fresh);
         changed = true;
       }
@@ -4135,6 +4142,7 @@ async function syncMetaFromLibrary() {
         $("fp-name").textContent = displayName(state.currentSwitch);
         renderFingerprintTags(state.currentSwitch);
         if ($("meta-switch")) $("meta-switch").textContent = displayName(state.currentSwitch);
+        refreshExportVisibility();
       }
     }
   } catch (_) { /* network or 404 — skip */ }
