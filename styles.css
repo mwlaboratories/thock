@@ -97,7 +97,7 @@ body::before {
 .capture-meta dt, .capture-meta dd, .samples-head > span, .switch-empty,
 .scope-legend, .level-db, .dialog-hint, .guided-phase-num,
 .guided-card-status, .guided-card-counter, .library-count,
-.switch-tile .ct, .tile .label, .typist-switches:empty::before,
+.switch-tile .ct, .tile .label,
 #status-text, .param {
   font-family: var(--font-mono);
 }
@@ -1075,21 +1075,6 @@ canvas {
   font-family: inherit;
   font-size: 0.85rem;
   border-radius: var(--radius);
-}
-
-.typist-switches {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 12px;
-  min-height: 36px;
-}
-.typist-switches:empty::before {
-  content: "no switches with samples yet";
-  color: var(--ink-mute);
-  font-size: 0.7rem;
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
 }
 
 .typist-stack { margin-top: 10px; }
