@@ -32,9 +32,8 @@ and keeps those. If too few were usable, it asks before saving.
 ** fingerprint
 
 Averaged smoothed spectrum across all the samples of the currently
-selected switch, with the most prominent resonant peaks labelled.
-Selecting a different switch redraws the curve on the same axes for
-direct comparison.
+selected switch. Selecting a different switch redraws the curve on
+the same axes for direct comparison.
 
 ** typist
 
