@@ -1178,3 +1178,56 @@ dialog input:focus { outline: none; border-color: var(--accent); }
       "typist";
   }
 }
+
+/* phone — strip the lab down to "pick a switch, listen to the typist".
+   Mic capture, fingerprint, samples grid, and inspect all want a real
+   keyboard and a desktop-sized canvas to be useful, so hide them
+   outright rather than squeeze them into a 360 px column. */
+@media (max-width: 640px) {
+  .topbar,
+  .capture-pane,
+  .inspect-pane,
+  .switch-pane .fingerprint,
+  .switch-pane .samples-head,
+  .switch-pane .samples,
+  #new-switch,
+  #remove-switch-btn {
+    display: none;
+  }
+
+  main {
+    padding: 14px 12px 24px;
+    gap: 12px;
+  }
+  .pane { padding: 14px 14px 16px; }
+  .pane-head { margin-bottom: 10px; padding-bottom: 8px; }
+  .pane-head h2 { font-size: 0.65rem; letter-spacing: 0.28em; }
+
+  .switch-row { margin-bottom: 0; }
+  .switch-tile { padding: 10px 12px; font-size: 0.95rem; }
+  .action.small { padding: 8px 14px; font-size: 0.8rem; }
+
+  .typist-controls { gap: 8px; }
+  .typist-controls .hint { display: none; }
+  #typist-text { height: 44px; }
+  #typist-viz  { height: 100px; }
+
+  /* Dialogs: drop the 460 px min-width that overflows phone viewports,
+     and let the library list show one tile per row for thumb taps. */
+  dialog {
+    min-width: auto;
+    max-width: calc(100vw - 24px);
+    padding: 18px 18px 20px;
+  }
+  dialog h3 { font-size: 1.2rem; }
+  .library-list { max-height: 60vh; padding: 8px; }
+  .library-grid { grid-template-columns: 1fr; }
+
+  /* Guided modal isn't reachable when capture is hidden, but harden
+     it in case it's ever opened on a small viewport. */
+  .guided-card {
+    min-width: auto;
+    max-width: calc(100vw - 24px);
+    padding: 22px 18px 18px;
+  }
+}

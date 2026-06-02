@@ -71,17 +71,9 @@ devenv up
   =capture-worklet.js=)
 - =scripts/bundle_library.py= — converts a folder of WAV recordings
   into the FLAC catalog the site serves
-
-The curated library lives in a separate private repo, mounted at
-=library/= as a git submodule. If you have access:
-
-#+BEGIN_SRC sh
-git submodule update --init
-#+END_SRC
-
-Without it, the /library/ button stays empty and you can record
-your own switches.
+- =library/= — the curated FLAC payload that the site serves
 
 * License
 
-MIT for the code. Library recordings under =library/= are separate.
+MIT for the code. The =library/= recordings are CC-BY (attribute
+mwlabs if you reuse them).

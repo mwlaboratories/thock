@@ -1,6 +1,5 @@
 {
   "cleanUrls": true,
-  "installCommand": "git config --global url.\"https://x-access-token:${GITHUB_TOKEN}@github.com/\".insteadOf https://github.com/ && git submodule sync && git submodule update --init --recursive --depth=1",
   "headers": [
     {
       "source": "/(.*\\.js)",
