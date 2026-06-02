@@ -27,6 +27,8 @@ import shutil
 import sys
 from pathlib import Path
 
+import soundfile as sf  # libsndfile wrapper; handles float WAV → FLAC
+
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_DST = REPO / "library"
 
@@ -73,8 +75,18 @@ def main() -> int:
             continue
         out_dir = dst / switch_dir.name
         out_dir.mkdir(exist_ok=True)
+        flacs = []
         for f in wavs:
-            shutil.copy2(switch_dir / f, out_dir / f)
+            src_wav = switch_dir / f
+            dst_flac = out_dir / (Path(f).stem + ".flac")
+            # Read whatever the source WAV's subtype is (thock writes
+            # float32), write 24-bit FLAC — preserves float32's
+            # effective precision (mantissa is 24 bits) without paying
+            # for full-float storage, and matches what mainstream
+            # browsers decode efficiently.
+            data, sr = sf.read(str(src_wav), always_2d=False, dtype="float32")
+            sf.write(str(dst_flac), data, sr, format="FLAC", subtype="PCM_24")
+            flacs.append(dst_flac.name)
 
         meta_path = switch_dir / "meta.json"
         meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
@@ -84,12 +96,16 @@ def main() -> int:
             "family":      meta.get("family", ""),
             "description": meta.get("description", ""),
             "color":       meta.get("color", DEFAULT_COLORS[color_idx % len(DEFAULT_COLORS)]),
-            "files":       wavs,
+            "files":       flacs,
         }
         index.append(entry)
         color_idx += 1
+        wav_bytes = sum((switch_dir / f).stat().st_size for f in wavs)
+        flac_bytes = sum((out_dir / f).stat().st_size for f in flacs)
+        ratio = (flac_bytes / wav_bytes * 100) if wav_bytes else 0
         fam = f" [{entry['family']}]" if entry["family"] else ""
-        print(f"  {entry['id']}{fam}: {len(wavs)} samples")
+        print(f"  {entry['id']}{fam}: {len(flacs)} samples · "
+              f"{wav_bytes // 1024} KB → {flac_bytes // 1024} KB ({ratio:.0f}%)")
 
     (dst / "index.json").write_text(json.dumps(index, indent=2) + "\n")
     print(f"\nbundled {len(index)} switches → {dst}")
