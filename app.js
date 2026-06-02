@@ -2668,16 +2668,19 @@ async function startTyping() {
 
       // Velocity gain. Soft strokes ride at ~0.55, hard at ~1.05. Space
       // gets a small boost — spacebars are physically larger and
-      // perceptually louder. Edge ramps (0.5 ms in, 3 ms out)
-      // eliminate the click/pop you'd otherwise hear if the WAV's
-      // first/last sample isn't exactly at zero crossing — short
-      // enough to leave the press transient itself intact.
+      // perceptually louder. Edge ramps (20 ms in, 15 ms out) kill
+      // the "plop" you'd otherwise hear when the WAV's first/last
+      // sample isn't at zero — the step is broadband but speaker
+      // cones move farthest at low frequencies, so the click reads as
+      // a bass thump. Both ramps land inside the preroll/tail
+      // silence (capture pipeline writes ~50 ms preroll), so no
+      // perceptual loss on the press transient itself.
       const gain = state.audioCtx.createGain();
       let velGain = 0.55 + ampTarget * 0.5;
       if (ch === " ") velGain *= 1.15;
-      const FADE_IN = 0.0005;
-      const FADE_OUT = 0.003;
       const dur = src.buffer.duration;
+      const FADE_IN = Math.min(0.020, dur * 0.25);
+      const FADE_OUT = Math.min(0.015, dur * 0.20);
       gain.gain.setValueAtTime(0, nextTime);
       gain.gain.linearRampToValueAtTime(velGain, nextTime + FADE_IN);
       gain.gain.setValueAtTime(velGain, nextTime + Math.max(FADE_IN, dur - FADE_OUT));
@@ -3347,10 +3350,22 @@ async function selectSample(t) {
 
 function playSampleNow(t) {
   if (!t.meta) return;
-  const src = state.audioCtx.createBufferSource();
+  const ctx = state.audioCtx;
+  const src = ctx.createBufferSource();
   src.buffer = t.meta.buf;
-  src.connect(state.audioCtx.destination);
-  src.start();
+  const gain = ctx.createGain();
+  // Same envelope as the typist — edge ramps land inside the
+  // preroll/tail silence and kill the bass-thump edge clicks.
+  const start = ctx.currentTime + 0.005;
+  const dur = src.buffer.duration;
+  const FADE_IN = Math.min(0.020, dur * 0.25);
+  const FADE_OUT = Math.min(0.015, dur * 0.20);
+  gain.gain.setValueAtTime(0, start);
+  gain.gain.linearRampToValueAtTime(1, start + FADE_IN);
+  gain.gain.setValueAtTime(1, start + Math.max(FADE_IN, dur - FADE_OUT));
+  gain.gain.linearRampToValueAtTime(0, start + dur);
+  src.connect(gain).connect(ctx.destination);
+  src.start(start);
 }
 
 // Play every loaded sample in current sort order, gap of ~120 ms
@@ -3377,7 +3392,15 @@ async function togglePlayAll() {
     const buf = t.meta.buf;
     const src = state.audioCtx.createBufferSource();
     src.buffer = buf;
-    src.connect(state.audioCtx.destination);
+    // Same edge-ramp envelope as the typist (kills bass-thump edge clicks).
+    const gain = state.audioCtx.createGain();
+    const FADE_IN = Math.min(0.020, buf.duration * 0.25);
+    const FADE_OUT = Math.min(0.015, buf.duration * 0.20);
+    gain.gain.setValueAtTime(0, next);
+    gain.gain.linearRampToValueAtTime(1, next + FADE_IN);
+    gain.gain.setValueAtTime(1, next + Math.max(FADE_IN, buf.duration - FADE_OUT));
+    gain.gain.linearRampToValueAtTime(0, next + buf.duration);
+    src.connect(gain).connect(state.audioCtx.destination);
     src.start(next);
     next += buf.duration + GAP_S;
     i++;
