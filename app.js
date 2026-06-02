@@ -3455,7 +3455,11 @@ function _renderLibraryList() {
   const list = $("library-list");
   if (!list) return;
   const switches = state.libraryCatalog || [];
-  const haveIds = new Set(state.switches.map((s) => s.name));
+  // Only treat a switch as "owned" if it actually has samples on
+  // disk. A 0-sample directory means a previous import was aborted
+  // mid-flight (closed mid-download); show it as re-importable so
+  // the user can recover without manually removing it first.
+  const haveIds = new Set(state.switches.filter((s) => s.count > 0).map((s) => s.name));
   const selected = state.librarySelected;
   const { type, q } = state.libraryFilter || { type: "all", q: "" };
   const qLower = q.trim().toLowerCase();
@@ -3538,59 +3542,76 @@ function _updateLibraryCount() {
   if (ok) ok.disabled = n === 0;
 }
 
+// Block dialog cancel (ESC) — used as an event listener that prevents
+// the default close behavior while imports are in flight.
+function _blockDialogCancel(e) { e.preventDefault(); }
+
 async function importSelectedFromLibrary() {
   const okBtn = $("library-ok");
+  const closeBtn = $("library-close");
+  const dlg = $("library-dialog");
   const catalog = state.libraryCatalog || [];
   const selected = state.librarySelected || new Set();
   if (!state.storageHandle) {
-    $("library-dialog").close();
+    dlg.close();
     showStorageGate(state.storageName);
     return;
   }
-  const have = new Set(state.switches.map((s) => s.name));
+  const have = new Set(state.switches.filter((s) => s.count > 0).map((s) => s.name));
   const wanted = [];
   for (const id of selected) {
     if (have.has(id)) continue;
     const p = catalog.find((x) => x.id === id);
     if (p) wanted.push(p);
   }
-  if (!wanted.length) { $("library-dialog").close(); return; }
+  if (!wanted.length) { dlg.close(); return; }
 
+  // Lock the dialog while files are mid-flight: disable buttons,
+  // block ESC cancel. Closing partway through used to leave switch
+  // directories with 0 files on disk.
   okBtn.disabled = true;
+  closeBtn.disabled = true;
+  dlg.addEventListener("cancel", _blockDialogCancel);
+
   let firstImported = null;
   let totalFiles = 0, doneFiles = 0;
   for (const p of wanted) totalFiles += (p.files || []).length;
 
-  for (const preset of wanted) {
-    try {
-      const dir = await state.storageHandle.getDirectoryHandle(preset.id, { create: true });
-      for (const file of (preset.files || [])) {
-        const r = await fetch(`/library/${encodeURIComponent(preset.id)}/${encodeURIComponent(file)}`);
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        const ab = await r.arrayBuffer();
-        const fh = await dir.getFileHandle(file, { create: true });
-        const w = await fh.createWritable();
-        await w.write(ab);
-        await w.close();
-        doneFiles++;
-        okBtn.textContent = `importing · ${doneFiles}/${totalFiles}`;
+  try {
+    for (const preset of wanted) {
+      try {
+        const dir = await state.storageHandle.getDirectoryHandle(preset.id, { create: true });
+        for (const file of (preset.files || [])) {
+          const r = await fetch(`/library/${encodeURIComponent(preset.id)}/${encodeURIComponent(file)}`);
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          const ab = await r.arrayBuffer();
+          const fh = await dir.getFileHandle(file, { create: true });
+          const w = await fh.createWritable();
+          await w.write(ab);
+          await w.close();
+          doneFiles++;
+          okBtn.textContent = `importing · ${doneFiles}/${totalFiles}`;
+        }
+        if (preset.color) setSwitchColor(preset.id, preset.color);
+        setSwitchMeta(preset.id, {
+          name: preset.name || preset.id,
+          family: preset.family || "",
+          description: preset.description || "",
+        });
+        if (!firstImported) firstImported = preset.id;
+      } catch (e) {
+        console.error("import failed for", preset.id, e);
+        setStatus(`failed to import ${preset.id}: ${e.message}`);
       }
-      if (preset.color) setSwitchColor(preset.id, preset.color);
-      setSwitchMeta(preset.id, {
-        name: preset.name || preset.id,
-        family: preset.family || "",
-        description: preset.description || "",
-      });
-      if (!firstImported) firstImported = preset.id;
-    } catch (e) {
-      console.error("import failed for", preset.id, e);
-      setStatus(`failed to import ${preset.id}: ${e.message}`);
     }
+  } finally {
+    okBtn.disabled = false;
+    okBtn.textContent = "import selected";
+    closeBtn.disabled = false;
+    dlg.removeEventListener("cancel", _blockDialogCancel);
   }
 
-  okBtn.disabled = false;
-  okBtn.textContent = "import selected";
-  $("library-dialog").close();
+  dlg.close();
   setStatus(`imported ${wanted.length} switch${wanted.length === 1 ? "" : "es"} · ${doneFiles} samples`);
   await refreshSwitches();
   if (firstImported) await selectSwitch(firstImported);
