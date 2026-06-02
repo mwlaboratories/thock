@@ -1,68 +1,58 @@
 #+TITLE: thock
-#+SUBTITLE: the honest sound library for mechanical keyswitches
 #+AUTHOR: mwlabs
 #+OPTIONS: toc:2 num:nil
 
-Reviewers say /thocky/, /poppy/, /creamy/, /marble/. Manufacturer demos
-are recorded in soundproof booths with $3,000 microphones. You watch a
-YouTube clip, buy the switch, install it on *your* board on *your*
-desk, and it sounds nothing like the clip.
+A web page for recording mechanical keyswitches into a microphone and
+listening back. Press a switch, thock saves each press as a clip,
+averages the spectrum across many presses into a per-switch
+fingerprint, and plays a library of switches back as if you were
+typing prose. Useful if you're curious what a switch sounds like
+before buying it.
 
-thock is the alternative: *you* record *your* switches under *your*
-conditions, then compare them quantitatively — the actual frequencies,
-the actual attack, the actual housing ring — and listen to them play
-back as full paragraphs of typing, side by side.
-
-It's a single web page. Nothing leaves your machine. There's no
-account to make and nothing to install.
+Static site, runs in the browser, files stay local.
 
 Live: *https://thock.mwlabs.be*
 
-* What you can do with it
+* What's in the UI
 
-** Just listen
+** library
 
-Open the page, hit /library/, tick a few switches you're curious
-about. They download in seconds, the typist plays them as paragraphs
-of real prose at your chosen WPM. Click any switch chip to instantly
-hear that one instead. No microphone needed if you only want to
-browse.
+A small set of pre-recorded switches you can import with a click. The
+current set is the 16 switches in the Kailh Choc v2 tester pack from
+keebart. Importing copies the files into your browser's local
+storage; you can remove them whenever.
 
-** Record your own switch
+** record samples
 
-Plug a switch in (or just hold one between your fingers — it works
-without a keyboard). Click /+ create a switch/, give it a name, click
-/▶ record samples/. A visual metronome paces you through ~60 taps
-that gradually speed up; we auto-curate the cleanest 30 across the
-tempo range. The whole thing takes about a minute.
+Click /+ create a switch/, then /▶ record samples/. A visual
+metronome paces you through ~60 taps that gradually speed up. After
+the run, thock picks ~30 of the cleanest taps across the tempo range
+and keeps those. If too few were usable, it asks before saving.
 
-** Compare two switches
+** fingerprint
 
-Record one, import another from the library, and the fingerprint pane
-shows the averaged spectrum of whichever you have selected — same
-axes, same scale. Switch between them with one click; the typist
-follows.
+Averaged smoothed spectrum across all the samples of the currently
+selected switch, with the most prominent resonant peaks labelled.
+Selecting a different switch redraws the curve on the same axes for
+direct comparison.
 
-** Contribute your recording
+** typist
 
-Hit /export/ on any switch you recorded. You get a zip with your
-samples plus the name / type / weight / family you typed in. Email it
-to *info@mwlabs.be* and it joins the curated library on the next
-release.
+Plays back the selected switch's samples as paragraphs of prose at a
+given WPM. Source defaults to a small set of bundled passages;
+attempts to fetch live articles from libertis.net at boot, falls
+back if blocked.
 
-* Why bother
+** export
 
-A /press of switch X/ is a concept: a class of acoustic events that
-all share the switch's essential signature (housing resonance, click
-character, release character) and only differ in measurements that
-don't matter (how hard you pressed, the exact angle of your finger).
-thock captures that signature — averages many presses into one honest
-spectrum — so two switches can finally be compared without buying
-both of them, recording in a treated room, or trusting an adjective.
+For switches you recorded yourself, /export/ on the samples row
+downloads a zip containing the WAVs plus a =meta.json= built from
+the name / family / type / weight you typed in. Email the zip to
+*info@mwlabs.be* to contribute it to the library.
 
-* Running it yourself
+* Running locally
 
-Static site. No build step. Any HTTP server works:
+Static site, no build step:
 
 #+BEGIN_SRC sh
 python -m http.server 8765
@@ -71,33 +61,26 @@ python -m http.server 8765
 Or with [[https://devenv.sh][devenv]]:
 
 #+BEGIN_SRC sh
-devenv up        # http://127.0.0.1:8765
+devenv up
 #+END_SRC
-
-That's the whole setup.
 
 * What's in this repo
 
-- The full thock web app (HTML, CSS, JavaScript)
-- A small Python script that bundles a folder of WAV recordings into
-  the FLAC catalog the site serves
+- The thock web app (=index.html=, =app.js=, =styles.css=,
+  =capture-worklet.js=)
+- =scripts/bundle_library.py= — converts a folder of WAV recordings
+  into the FLAC catalog the site serves
 
-The curated switch library itself lives in a separate (private) repo
-mounted as a =library/= submodule — code stays open, the recordings
-stay ours. End-users get the same experience either way; they just
-can't trivially scrape the recordings from this repository.
-
-If you clone and want the library available locally:
+The curated library payload lives in a separate private repo
+mounted at =library/= as a git submodule. If you clone without
+access to that submodule, the /library/ button stays empty;
+recording your own switches still works.
 
 #+BEGIN_SRC sh
-git submodule update --init
+git submodule update --init    # pulls library/ if you have access
 #+END_SRC
-
-Without access to the library repo, the /library/ button will be
-empty but everything else (record, fingerprint, typist on your own
-recordings) works fine.
 
 * License
 
-MIT — the code is yours to read, fork, and build on. The library
-recordings are not covered (they're in a separate, not-MIT repo).
+MIT for the code in this repo. The library recordings under
+=library/= are not covered.
