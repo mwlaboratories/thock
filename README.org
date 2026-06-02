@@ -13,6 +13,8 @@ Static site, runs in the browser, files stay local.
 
 Live: *https://thock.mwlabs.be*
 
+[[file:docs/overview.png]]
+
 * What's in the UI
 
 ** library
@@ -70,33 +72,16 @@ devenv up
 - =scripts/bundle_library.py= — converts a folder of WAV recordings
   into the FLAC catalog the site serves
 
-The curated library payload lives in a separate private repo mounted
-at =library/= as a git submodule. Reasons for the split:
-
-- *Repo size.* Code is small text; the library is binary blobs that
-  will grow. Keeping them apart means the code repo stays
-  clone-in-seconds, CI fast, and GitHub's web UI happy.
-- *License boundary.* Code is MIT. Library recordings aren't (we
-  don't want them re-released under MIT). Two repos, two LICENSE
-  files, clear line.
-- *Git fit.* Git is good at line-diffs and bad at binary churn —
-  separating them lets both repos use git the way it's actually good.
-
-What the split does *not* do: stop someone from downloading the
-library. The files are served on the public web; two lines of
-=curl + jq= and you have the whole thing. The submodule hides
-filenames from GitHub source browsing, not from runtime scraping.
-
-If you clone and have access to the library repo:
+The curated library lives in a separate private repo, mounted at
+=library/= as a git submodule. If you have access:
 
 #+BEGIN_SRC sh
 git submodule update --init
 #+END_SRC
 
-Without access, the /library/ button stays empty; recording your
-own switches still works.
+Without it, the /library/ button stays empty and you can record
+your own switches.
 
 * License
 
-MIT for the code in this repo. The library recordings under
-=library/= are not covered.
+MIT for the code. Library recordings under =library/= are separate.
