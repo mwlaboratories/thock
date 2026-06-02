@@ -3130,17 +3130,6 @@ function currentPrimaryMode() {
 
 function refreshPrimary() {
   setPrimary(currentPrimaryMode());
-  const recal = $("guided-btn");
-  if (!recal) return;
-  // Surface a "re-record" affordance only once the switch has samples
-  // — otherwise the primary "▶ record samples" button does the same job.
-  const sw = state.switches.find((s) => s.name === state.currentSwitch);
-  if (sw && sw.count > 0) {
-    recal.classList.remove("hidden");
-    recal.textContent = "re-record";
-  } else {
-    recal.classList.add("hidden");
-  }
 }
 
 function renderScope() {
@@ -4006,12 +3995,6 @@ function wire() {
     if (!state.switches.length) maybeAutoOpenLibrary();
   };
 
-  $("guided-btn").addEventListener("click", () => {
-    startGuided().catch((e) => {
-      console.error("guided failed", e);
-      setStatus("guided failed: " + e.message);
-    });
-  });
   $("guided-cancel").addEventListener("click", cancelGuided);
   $("guided-retry").addEventListener("click", () => {
     _retryGuidedSession().catch((e) => { console.error(e); setStatus("retry failed: " + e.message); });
