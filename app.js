@@ -165,7 +165,11 @@ async function fsListSwitches() {
     if (!SAFE_NAME.test(name)) continue;
     const samples = [];
     for await (const [fn, fe] of entry.entries()) {
-      if (fe.kind === "file" && fn.endsWith(".wav")) samples.push(fn);
+      // Accept both .wav (user recordings) and .flac (library imports).
+      // decodeAudioData handles both via the same code path downstream.
+      if (fe.kind !== "file") continue;
+      const lower = fn.toLowerCase();
+      if (lower.endsWith(".wav") || lower.endsWith(".flac")) samples.push(fn);
     }
     samples.sort();
     out.push({ name, samples, count: samples.length });
@@ -914,7 +918,7 @@ async function arm() {
   state.inEvent = false;
   state.belowSinceAbs = -1;
   state.lastEventEndAbs = -1;
-  $("session-count").textContent = "0";
+  if ($("session-count")) $("session-count").textContent = "0";
   refreshPrimary();
   $("capture-status").classList.add("armed");
 
@@ -1666,7 +1670,7 @@ async function saveCycle(startAbs, endAbs, kind) {
   try {
     await fsSaveSample(sw, wav, null);
     state.sessionCount++;
-    $("session-count").textContent = String(state.sessionCount);
+    if ($("session-count")) $("session-count").textContent = String(state.sessionCount);
     await refreshSwitches();
     if (sw === state.currentSwitch) await loadSwitchSamples(sw);
   } catch (e) {
@@ -2664,11 +2668,20 @@ async function startTyping() {
 
       // Velocity gain. Soft strokes ride at ~0.55, hard at ~1.05. Space
       // gets a small boost — spacebars are physically larger and
-      // perceptually louder.
+      // perceptually louder. Edge ramps (0.5 ms in, 3 ms out)
+      // eliminate the click/pop you'd otherwise hear if the WAV's
+      // first/last sample isn't exactly at zero crossing — short
+      // enough to leave the press transient itself intact.
       const gain = state.audioCtx.createGain();
       let velGain = 0.55 + ampTarget * 0.5;
       if (ch === " ") velGain *= 1.15;
-      gain.gain.value = velGain;
+      const FADE_IN = 0.0005;
+      const FADE_OUT = 0.003;
+      const dur = src.buffer.duration;
+      gain.gain.setValueAtTime(0, nextTime);
+      gain.gain.linearRampToValueAtTime(velGain, nextTime + FADE_IN);
+      gain.gain.setValueAtTime(velGain, nextTime + Math.max(FADE_IN, dur - FADE_OUT));
+      gain.gain.linearRampToValueAtTime(0, nextTime + dur);
 
       // Stereo pan from a rough QWERTY position model: left half of the
       // keyboard pans left, right half pans right. The cue is subtle
@@ -3178,7 +3191,7 @@ function renderScope() {
     const lin = clamp((db + 60) / 60, 0, 1);
     $("level-fill").style.width = (lin * 100) + "%";
     $("level-db").textContent = state.audioCtx ? `${db.toFixed(0)} dB` : "— dB";
-    $("meta-floor").textContent = state.audioCtx ? state.floorEMA.toFixed(3) : "—";
+    if ($("meta-floor")) $("meta-floor").textContent = state.audioCtx ? state.floorEMA.toFixed(3) : "—";
 
     requestAnimationFrame(frame);
   }
