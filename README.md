@@ -1,106 +1,98 @@
 # thock
 
-A measurement-instrument for the sound of mechanical keyswitches. Record
-each press as a WAV, average the spectra into a per-switch *fingerprint*,
-compare switches side-by-side, and let a built-in typist play your samples
-back at any WPM with realistic English digraph rolls.
+The honest sound library for mechanical keyswitches.
 
-Single-page web app. Static. Runs entirely in the browser. Storage uses
-the File System Access API (or OPFS as a fallback) — nothing leaves your
-machine.
+Reviewers say *thocky*, *poppy*, *creamy*, *marble*. Manufacturer demos
+are recorded in soundproof booths with $3,000 microphones. You watch a
+YouTube clip, buy the switch, install it on **your** board on **your**
+desk, and it sounds nothing like the clip.
 
-Live: **https://thock.mwlabs.be**
+thock is the alternative: *you* record *your* switches under *your*
+conditions, then compare them quantitatively — the actual frequencies,
+the actual attack, the actual housing ring — and listen to them play
+back as full paragraphs of typing, side by side.
+
+It's a single web page. Nothing leaves your machine. There's no account
+to make and nothing to install.
+
+**Live: [thock.mwlabs.be](https://thock.mwlabs.be)**
 
 ---
 
-## What it does
+## What you can do with it
 
-- **capture** — enable the mic, hit *start*, press the key. Every press
-  above the auto-tracked noise floor is segmented and written to disk as
-  a WAV in real time. Hit *stop* when done.
-- **inspect** — pick a sample to see its waveform (onset-aligned, with
-  `DOWN`/`UP` markers for clicky switches), per-sample FFT, and a
-  magma-colormap STFT spectrogram.
-- **fingerprint** — averaged smoothed spectrum across every sample of a
-  switch, with the top resonant peaks labeled (`428 Hz`, `1.24 kHz`,
-  `4.5 kHz` …). That's the switch's identity.
-- **typist** — plays your samples back as a real-text stream (top-100
-  English words / quotes / pangrams / random). Common digraphs roll
-  faster, awkward ones stretch, occasional micro-pauses. Letters appear
-  on a synced canvas above the keystroke waveforms.
-- **library** — curated switch datasets hosted alongside the site;
-  one-click import into your storage.
-- **per-switch color** — small palette assigned via name hash or picked
-  manually; persisted in `localStorage`.
+### Just listen
+Open the page, hit *library*, tick a few switches you're curious about.
+They download in seconds, the typist plays them as paragraphs of real
+prose at your chosen WPM. Click any switch chip to instantly hear that
+one instead. No microphone needed if you only want to browse.
 
-## Running locally
+### Record your own switch
+Plug a switch in (or just hold one between your fingers — it works
+without a keyboard). Click *+ create a switch*, give it a name, click
+*▶ record samples*. A visual metronome paces you through ~60 taps that
+gradually speed up; we auto-curate the cleanest 30 across the tempo
+range. The whole thing takes about a minute.
 
-Requires [devenv](https://devenv.sh):
+### Compare two switches
+Record one, import another from the library, and the fingerprint pane
+shows the averaged spectrum of whichever you have selected — same axes,
+same scale. Switch between them with one click; the typist follows.
 
-```sh
-devenv up        # starts a static server on http://127.0.0.1:8765
-```
+### Contribute your recording
+Hit *export* on any switch you recorded — you get a zip with your
+samples plus the name / type / weight / family you typed in. Email it
+to **info@mwlabs.be** and it joins the curated library on the next
+release.
 
-Or any static server pointed at the repo root:
+## Why bother
+
+A *press of switch X* is a concept: a class of acoustic events that all
+share the switch's essential signature (housing resonance, click
+character, release character) and only differ in measurements that
+don't matter (how hard you pressed, the exact angle of your finger).
+thock captures that signature — averages many presses into one honest
+spectrum — so two switches can finally be compared without buying both
+of them, recording in a treated room, or trusting an adjective.
+
+## Running it yourself
+
+Static site. No build step. Any HTTP server works:
 
 ```sh
 python -m http.server 8765
 ```
 
-Then open `http://127.0.0.1:8765`. Click *choose folder* (or *use browser
-storage* on Firefox/Safari) to pick where samples are written.
-
-## Browser support
-
-- Chrome / Edge / Brave / Arc / Opera — folder picker available (real
-  filesystem)
-- Firefox / Safari — falls back to OPFS (browser-managed filesystem,
-  files not visible to the OS but functionally identical)
-
-Mic capture goes through AudioWorklet so capture latency stays well below
-visible.
-
-## Adding library
-
-After recording your dataset locally, bundle it:
+or with [devenv](https://devenv.sh):
 
 ```sh
-python scripts/bundle_library.py /path/to/your/samples --clear
+devenv up        # http://127.0.0.1:8765
 ```
 
-This copies each `<switch>/*.wav` into `library/<switch>/` and
-regenerates `library/index.json`. Drop a `meta.json` next to a switch's
-samples for custom name / description / color:
+That's the whole setup.
 
-```json
-{
-  "name": "Choc v2 Red",
-  "description": "Kailh Choc v2 Red — 50 gf linear",
-  "color": "#ff6b6b"
-}
-```
+## What's in this repo
 
-Commit the `library/` tree, push, and the site picks them up.
+- The full thock web app (HTML, CSS, JavaScript)
+- A small Python script that bundles a folder of WAV recordings into
+  the FLAC catalog the site serves
 
-## Deploying to Vercel
+The curated switch library itself lives in a separate (private) repo
+mounted as a `library/` submodule — code stays open, the recordings
+stay ours. End-users get the same experience either way; they just
+can't trivially scrape the recordings from this repository.
 
-Pure static — no build step. From the repo root:
+If you clone and want the library available locally:
 
 ```sh
-vercel --prod
+git submodule update --init
 ```
 
-Or connect the GitHub repo in the Vercel dashboard. A `vercel.json` is
-included that sets the `.js` content type explicitly (needed for
-AudioWorklet).
-
-## Stack
-
-- Vanilla HTML / CSS / JavaScript — no framework, no build
-- Audio: Web Audio API, AudioWorklet for capture
-- Storage: File System Access API + IndexedDB (handle), OPFS fallback
-- Fonts: Major Mono Display (wordmark), Geist Mono (everything else)
+Without access to the library repo, the *library* button will be empty
+but everything else (record, fingerprint, typist on your own
+recordings) works fine.
 
 ## License
 
-MIT.
+MIT — the code is yours to read, fork, and build on. The library
+recordings are not covered (they're in a separate, not-MIT repo).
