@@ -283,6 +283,9 @@ const state = {
   //                    transient (which crosses threshold mid-batch) is
   //                    not clipped.
   wavefrontTailMs: 35,
+  // 350 ms default. Per-switch calibration overrides this via
+  // state.switchDwells (capped at 500 ms — wider was over-pairing
+  // consecutive presses in normal typing).
   dwellWindowMs: 350,
   gapMs: 25,
   prerollMs: 50,
@@ -314,9 +317,21 @@ const state = {
   // Persisted in localStorage so the switch's "identity" survives across
   // sessions and a returning user sees it without re-running guided.
   switchTemplates: new Map(),
+  // Display metadata for switches (name, family, description) so the
+  // main UI can show "Autumn" instead of the raw directory id
+  // "chocv2_autumn". Populated when importing from the library;
+  // user-created switches (via "+ new") have no entry and fall back
+  // to their raw id.
+  switchMeta: new Map(),
 
   // --- typist ---
+  // Live-fetched article passages from libertis.net (or null if the
+  // fetch failed). makeTextStream falls back to the bundled PASSAGES
+  // when this is missing.
+  articles: null,
   typingActive: false, typingStop: null, typingSwitch: null,
+  // play-all loop state: { active: bool } when running, null when not
+  playAll: null,
   typingPulses: [],
   typedChars: [],
   // recent sample indices — keeps the same WAV from repeating back to
@@ -350,19 +365,49 @@ function saveFftSettings() {
   catch (_) { /* ignore */ }
 }
 
-// palette tuned for dark backgrounds; distinguishable for typical
+// Palette tuned to read on BOTH light and dark surfaces — every entry
+// sits around L*≈55–65 so the fingerprint curve, switch-name display,
+// and chip text all have enough contrast against the near-white light
+// theme AND the near-black dark theme. Also distinguishable for typical
 // red-green colourblindness via differing lightness as well as hue.
+// Ordered roughly along the spectrum so the picker scans naturally:
+// warm → cool, then neutrals at the end.
 const COLOR_PALETTE = [
   "#f5a623", // amber  (default accent)
-  "#ff6b6b", // coral
-  "#5ba8ff", // sky
-  "#7dd87d", // mint
-  "#b18cff", // violet
-  "#2dd4bf", // teal
-  "#ec4899", // pink
-  "#d4e642", // lime
-  "#e8e6e0", // ivory
+  "#e67e22", // orange
+  "#e25555", // coral
+  "#c0392b", // crimson
+  "#d63384", // pink
+  "#a040b3", // magenta
+  "#9472d8", // violet
+  "#5b6acb", // indigo
+  "#3d8be8", // sky
+  "#2da8c0", // aqua
+  "#0f9c8e", // teal
+  "#2e9d6c", // emerald
+  "#3f9550", // forest green
+  "#7a8a30", // olive
+  "#b78d2a", // mustard
+  "#a05a2c", // brown
+  "#7c8590", // slate
+  "#5a6470", // charcoal
 ];
+
+// Earlier palette had four colours (ivory / lime / mint / teal) that
+// were L≈80+ and disappeared on the light theme's near-white surface.
+// Any switch whose stored colour matches a retired entry gets remapped
+// at load time to its lightness-corrected replacement — saves the user
+// from re-picking after the palette update.
+const RETIRED_COLOR_MAP = {
+  "#e8e6e0": "#a05a2c", // ivory → brown
+  "#d4e642": "#b78d2a", // lime → mustard
+  "#7dd87d": "#3f9550", // mint → forest green
+  "#2dd4bf": "#0f9c8e", // washed teal → darker teal
+  "#ff6b6b": "#e25555", // washed coral → readable coral
+  "#5ba8ff": "#3d8be8", // washed sky → readable sky
+  "#b18cff": "#9472d8", // washed violet → readable violet
+  "#ec4899": "#d63384", // washed pink → readable pink
+};
 
 function colorForSwitch(name) {
   if (state.switchColors.has(name)) return state.switchColors.get(name);
@@ -388,6 +433,19 @@ function loadSwitchColors() {
     const raw = localStorage.getItem("thock.colors");
     if (raw) state.switchColors = new Map(JSON.parse(raw));
   } catch (_) { /* malformed → start fresh */ }
+  // Migrate retired colours forward so old assignments stay readable.
+  let migrated = false;
+  for (const [name, color] of state.switchColors) {
+    const lower = (color || "").toLowerCase();
+    if (RETIRED_COLOR_MAP[lower]) {
+      state.switchColors.set(name, RETIRED_COLOR_MAP[lower]);
+      migrated = true;
+    }
+  }
+  if (migrated) {
+    try { localStorage.setItem("thock.colors", JSON.stringify([...state.switchColors])); }
+    catch (_) { /* ignore */ }
+  }
 }
 
 function setSwitchDwell(name, ms) {
@@ -429,6 +487,77 @@ function loadSwitchTemplates() {
     const raw = localStorage.getItem("thock.templates");
     if (raw) state.switchTemplates = new Map(JSON.parse(raw));
   } catch (_) { /* malformed → start fresh */ }
+}
+
+// Reset & open the new-switch dialog. Clears all fields so the modal
+// always starts fresh; auto-id derivation from name kicks back in.
+function openNewSwitchDialog() {
+  for (const id of ["new-switch-id", "new-switch-name", "new-switch-family", "new-switch-desc"]) {
+    const el = $(id);
+    if (el) el.value = "";
+  }
+  $("new-switch-id").dataset.touched = "";
+  $("new-switch-dialog").showModal();
+  setTimeout(() => $("new-switch-name").focus(), 0);
+}
+
+// Turn a display name into a filesystem-safe id slug. Lowercase,
+// non-alphanumerics → underscore, collapsed runs.
+function _slugifyId(s) {
+  return (s || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_{2,}/g, "_");
+}
+
+function setSwitchMeta(id, meta) {
+  state.switchMeta.set(id, meta);
+  try {
+    localStorage.setItem("thock.switchMeta", JSON.stringify([...state.switchMeta]));
+  } catch (_) { /* private mode etc */ }
+}
+
+function loadSwitchMeta() {
+  try {
+    const raw = localStorage.getItem("thock.switchMeta");
+    if (raw) state.switchMeta = new Map(JSON.parse(raw));
+  } catch (_) { /* malformed → start fresh */ }
+}
+
+// Display name for a switch: library-provided name if imported, else
+// the raw directory id (which is also what the user typed if they
+// created the switch themselves via "+ new").
+function displayName(id) {
+  if (!id) return "—";
+  const m = state.switchMeta.get(id);
+  return (m && m.name) ? m.name : id;
+}
+
+// Render the family + type + weight tags next to the fingerprint name.
+// Pulled from switchMeta. The tags inherit the switch's color so
+// "Cherry MX Blue" and "Choc v2 Blue" stay visually distinct even
+// without reading the text.
+function renderFingerprintTags(id) {
+  const el = $("fp-tags");
+  if (!el) return;
+  el.innerHTML = "";
+  if (!id) return;
+  const m = state.switchMeta.get(id) || {};
+  const descParts = (m.description || "").split("·").map((s) => s.trim()).filter(Boolean);
+  const bits = [];
+  if (m.family) bits.push(m.family);
+  for (const p of descParts) bits.push(p);
+  if (!bits.length) return;
+  const color = colorForSwitch(id);
+  el.style.setProperty("--fp-color", color);
+  for (const b of bits) {
+    const t = document.createElement("span");
+    t.className = "fp-tag";
+    t.textContent = b;
+    el.appendChild(t);
+  }
 }
 
 function withAlpha(hex, alpha) {
@@ -634,11 +763,38 @@ function handleBatch(inp) {
   state.hpPrevY = hpPrevY;
   state.level = state.level * 0.65 + batchPeak * 0.35;
 
+  // While the metronome session is actively recording, mirror each
+  // batch into state.guided.chunks so we have the full PCM for
+  // post-hoc cycle slicing. The ring buffer is only 4 s — useless for
+  // a 40 s session — hence the separate growing buffer.
+  if (state.guided && state.guided.active) {
+    const copy = new Float32Array(inp.length);
+    copy.set(inp);
+    state.guided.chunks.push(copy);
+    state.guided.chunksLen += inp.length;
+  }
+  // Noise-profile accumulator: during the guided session's !listening
+  // window (3-2-1 countdown before recording starts) the room is
+  // genuinely quiet. Grab an FFT frame every ~150 ms. Stored on the
+  // template at finishGuided so future denoising can subtract it.
+  if (state.guided && state.guided.noiseProfile && !state.guided.listening) {
+    const np = state.guided.noiseProfile;
+    const accumStride = Math.floor(state.sampleRate * 0.15);
+    if (state.absIdx >= np.fftN && state.absIdx - np.lastAccumAbs > accumStride) {
+      try { _accumulateGuidedNoiseFrame(); }
+      catch (e) { /* never break audio thread on this */ }
+      np.lastAccumAbs = state.absIdx;
+    }
+  }
+
   // noise floor: slow EMA of high-passed peak while not in a press.
   if (!state.inEvent) {
     state.floorEMA = state.floorEMA * 0.99 + hpBatchPeak * 0.01;
   }
-  state.autoThreshold = clamp(state.floorEMA * 4, 0.008, 0.5);
+  // Lower floor 0.008 → 0.003 so soft silent-switch taps in a genuinely
+  // quiet room can still cross threshold. The 4× multiplier over the
+  // adaptive floor still keeps random mic noise from triggering.
+  state.autoThreshold = clamp(state.floorEMA * 4, 0.003, 0.5);
 
   const blockStartAbs = state.absIdx;
   state.absIdx += inp.length;
@@ -828,36 +984,18 @@ function disarm() {
 // gives us a clean dwell baseline, natural-speed gives us the typing
 // dwell. Together they teach the system "what one keypress on this
 // switch looks like, and how that varies with speed."
-const GUIDED_PHASES = [
-  {
-    id: "down-iso",
-    label: "isolated DOWN",
-    hint: "press the key and HOLD a beat, then release. you'll do this 3 times — we only listen for the press.",
-    cycles: 3,
-    captures: ["down-iso", null],
-  },
-  {
-    id: "up-iso",
-    label: "isolated UP",
-    hint: "press, HOLD for about a second, then RELEASE. 3 times — we only listen for the release.",
-    cycles: 3,
-    captures: [null, "up-iso"],
-  },
-  {
-    id: "long-hold",
-    label: "1-second holds",
-    hint: "press, hold for about 1 second, release. 3 cycles — we capture both press and release.",
-    cycles: 3,
-    captures: ["down-1s", "up-1s"],
-  },
-  {
-    id: "natural",
-    label: "natural typing speed",
-    hint: "type at a comfortable speed. 5 presses — both wavefronts of each.",
-    cycles: 5,
-    captures: ["down-nat", "up-nat"],
-  },
-];
+// One flow, not two. The metronome ticks N beats with the tempo
+// accelerating from REC_BPM_START to REC_BPM_END across the session.
+// User follows the beat; we capture every wavefront pair. Afterward
+// we score each cycle by SNR + attack quality + isolation, bin them
+// across the tempo range, and keep the cleanest REC_KEEP_N to write
+// to disk. No "calibrate then record" split — recording IS the
+// calibration.
+const REC_BEATS      = 60;
+const REC_BPM_START  = 50;
+const REC_BPM_END    = 180;  // ≈ 45 WPM single-finger — keepable
+const REC_KEEP_N     = 30;
+const REC_BINS       = 5;    // tempo buckets for range coverage
 
 async function startGuided() {
   if (state.guided) return;
@@ -874,36 +1012,30 @@ async function startGuided() {
     return;
   }
   state.guided = {
-    phaseIdx: 0,
-    // cycle progression within the current phase
-    cyclesInPhase: 0,
-    wavefrontInCycle: 0,
-    cycleCooldownUntil: 0,
-    totalCaptured: 0,
-    // per-wavefront observations across the whole session — fed by the
-    // guided handler. Each entry: { phase, label, peak, attackMs,
-    // durationMs }. The dwell sweep also accumulates inter-wavefront
-    // gaps in observedDwells for calibration.
-    observations: [],
-    observedDwells: [],
-    // listening = false during the per-phase ready countdown so the
-    // mouseclick that started the session (and the hand-to-keyboard
-    // movement) doesn't get recorded as wavefront #1.
-    listening: false,
-    countdown: 0,
+    // Metronome state
+    active: false,           // true when beats are firing
+    beat: 0,                 // 1-indexed; 0 = pre-roll
+    nextBeatTimer: null,
+    listening: false,        // true during recording phase only
+    countdown: 0,            // 3-2-1 preroll
+    // Beat timestamps (sample-indices relative to sessionStartAbs).
+    // These ARE the priors the post-hoc detector uses to find taps.
+    beatTimes: [],
+    // Long-form PCM capture — the ring buffer is only 4 s, so we
+    // mirror each handleBatch into chunks for the full session length.
+    chunks: [],
+    chunksLen: 0,
+    sessionStartAbs: 0,
+    // Noise profile accumulated during preroll silence + small gaps
+    noiseProfile: { fftN: 1024, mag: new Float64Array(513), framesAccum: 0, lastAccumAbs: 0 },
   };
-  // hide any "learned" insight from a previous session
-  const learnedEl = $("guided-learned");
-  if (learnedEl) { learnedEl.classList.add("hidden"); learnedEl.innerHTML = ""; }
   $("guided-modal").classList.remove("hidden");
   updateGuidedUI();
-  // arm() handles inEvent / belowSince / lastEventEnd resets so events
-  // captured before guided mode don't leak into the new session.
   if (!state.armed) await arm();
-  beginPhaseCountdown();
+  beginRecordingCountdown();
 }
 
-function beginPhaseCountdown() {
+function beginRecordingCountdown() {
   if (!state.guided) return;
   state.guided.listening = false;
   state.guided.countdown = 3;
@@ -919,255 +1051,477 @@ function beginPhaseCountdown() {
     } else {
       _clearPendingFlush();
       state.guided.listening = true;
-      const phase = GUIDED_PHASES[state.guided.phaseIdx];
-      setStageForSlot(phase, 0);
-      updateGuidedUI();
-      setStatus(`guided · ${phase.label}`);
+      state.guided.active = true;
+      state.guided.sessionStartAbs = state.absIdx;
+      state.guided.chunks = [];
+      state.guided.chunksLen = 0;
+      setStatus("recording…");
+      _metronomeBeat();
     }
   };
   setTimeout(tick, 1000);
 }
 
-// ----- visual stage helpers ----------------------------------------
-//
-// The big action panel inside the guided modal. setStageForSlot picks
-// the icon + label + color based on what the user should do RIGHT NOW
-// for the current phase × slot-in-cycle. setStageCaptured flashes a
-// green checkmark; setStageCooldown shows a quiet "wait" between
-// cycles; setStageCountdown shows the 3-2-1 ready beat.
+// Exponential ramp from REC_BPM_START → REC_BPM_END across REC_BEATS.
+// Exponential because perceptually a doubling-of-speed is similar at
+// every tempo, so a log spacing produces an even-feeling acceleration.
+function bpmAtBeat(beat) {
+  const t = clamp((beat - 1) / Math.max(1, REC_BEATS - 1), 0, 1);
+  return REC_BPM_START * Math.pow(REC_BPM_END / REC_BPM_START, t);
+}
 
-function setStageForSlot(phase, slotIdx) {
-  const el = $("guided-stage");
-  const icon = $("guided-stage-icon");
-  const lbl = $("guided-stage-label");
-  const sub = $("guided-stage-sub");
-  if (!el) return;
-  if (phase.id === "down-iso" && slotIdx === 0) {
-    el.dataset.step = "press"; icon.textContent = "▼";
-    lbl.textContent = "PRESS"; sub.textContent = "we only listen for the press";
-  } else if (phase.id === "down-iso" && slotIdx === 1) {
-    el.dataset.step = "ready"; icon.textContent = "·";
-    lbl.textContent = "release whenever"; sub.textContent = "we'll ignore the release sound";
-  } else if (phase.id === "up-iso" && slotIdx === 0) {
-    el.dataset.step = "hold"; icon.textContent = "▼";
-    lbl.textContent = "PRESS & HOLD"; sub.textContent = "we're waiting for the release";
-  } else if (phase.id === "up-iso" && slotIdx === 1) {
-    el.dataset.step = "release"; icon.textContent = "▲";
-    lbl.textContent = "RELEASE NOW"; sub.textContent = "the release is what we want";
-  } else if (phase.id === "long-hold" && slotIdx === 0) {
-    el.dataset.step = "press"; icon.textContent = "▼";
-    lbl.textContent = "PRESS & HOLD"; sub.textContent = "hold for about 1 second";
-  } else if (phase.id === "long-hold" && slotIdx === 1) {
-    el.dataset.step = "release"; icon.textContent = "▲";
-    lbl.textContent = "RELEASE"; sub.textContent = "";
-  } else if (phase.id === "natural" && slotIdx === 0) {
-    el.dataset.step = "press"; icon.textContent = "▼";
-    lbl.textContent = "PRESS"; sub.textContent = "";
-  } else if (phase.id === "natural" && slotIdx === 1) {
-    el.dataset.step = "release"; icon.textContent = "▲";
-    lbl.textContent = "RELEASE"; sub.textContent = "";
-  } else {
-    el.dataset.step = "ready"; icon.textContent = "⋯";
-    lbl.textContent = "…"; sub.textContent = "";
+function _metronomeBeat() {
+  const g = state.guided;
+  if (!g || !g.active) return;
+  g.beat++;
+  // Record the sample-index when this beat fired — post-hoc detection
+  // anchors its tap search around these. Relative to sessionStartAbs so
+  // it indexes directly into the concatenated PCM chunks.
+  g.beatTimes.push(state.absIdx - g.sessionStartAbs);
+  setStageBeat(g.beat);
+  updateGuidedUI();
+  if (g.beat >= REC_BEATS) {
+    g.active = false;
+    // small grace period so the last tap's release tail finishes
+    setTimeout(() => finishGuided(false), 600);
+    return;
   }
+  const bpm = bpmAtBeat(g.beat + 1);
+  const intervalMs = Math.max(120, Math.round(60000 / bpm));
+  g.nextBeatTimer = setTimeout(_metronomeBeat, intervalMs);
+}
+
+// ----- visual stage helpers (metronome ring + center dot) ----------
+//
+// Single visual: progress ring fills as the session advances; the dot
+// pulses to accent on each beat and flashes green when a tap is
+// captured. NO text/icon swapping per beat — that was visually
+// horrible at fast tempo.
+
+const _METRO_CIRC = 339.292;  // 2 * pi * 54 (must match CSS dasharray)
+
+function _setDotLabel(s) {
+  const el = $("metro-dot-label");
+  if (el) el.textContent = s;
+}
+
+function _setProgress(frac) {
+  const el = $("metro-progress");
+  if (!el) return;
+  const f = Math.max(0, Math.min(1, frac));
+  el.style.strokeDashoffset = String(_METRO_CIRC * (1 - f));
+}
+
+function _flashDot(cls, ms) {
+  const dot = $("metro-dot");
+  if (!dot) return;
+  dot.classList.remove(cls);
+  void dot.offsetWidth;  // reflow so the class re-applies
+  dot.classList.add(cls);
+  setTimeout(() => dot && dot.classList.remove(cls), ms);
+}
+
+function setStageBeat(beatN) {
+  _setDotLabel("");
+  _setProgress(beatN / REC_BEATS);
+  _flashDot("beat", 110);
+}
+
+function setStageForSlot(_phase, _slotIdx) {
+  // legacy no-op — kept so any old callers don't throw
 }
 
 function setStageCaptured() {
-  const el = $("guided-stage");
-  if (!el) return;
-  el.dataset.step = "got";
-  $("guided-stage-icon").textContent = "✓";
-  $("guided-stage-label").textContent = "GOT IT";
-  $("guided-stage-sub").textContent = "";
-}
-
-function setStageCooldown() {
-  const el = $("guided-stage");
-  if (!el) return;
-  el.dataset.step = "ready";
-  $("guided-stage-icon").textContent = "⋯";
-  $("guided-stage-label").textContent = "WAIT…";
-  $("guided-stage-sub").textContent = "";
+  _flashDot("captured", 220);
 }
 
 function setStageCountdown(n) {
-  const el = $("guided-stage");
-  if (!el) return;
-  el.dataset.step = "ready";
-  $("guided-stage-icon").textContent = String(n);
-  $("guided-stage-label").textContent = "GET READY";
-  $("guided-stage-sub").textContent = "";
+  _setDotLabel(String(n));
+  _setProgress(0);
 }
 
-function advanceGuidedPhase() {
-  if (!state.guided) return;
-  // Surface what we just learned from the phase we're leaving so the
-  // user sees the system's understanding grow as they go.
-  displayLearnedSoFar();
-  state.guided.phaseIdx++;
-  state.guided.cyclesInPhase = 0;
-  state.guided.wavefrontInCycle = 0;
-  state.guided.cycleCooldownUntil = 0;
-  state.guided.lastPressStartAbs = null;
-  if (state.guided.phaseIdx >= GUIDED_PHASES.length) {
-    finishGuided(false);
-    return;
-  }
-  updateGuidedUI();
-  beginPhaseCountdown();
-}
+// (advanceGuidedPhase / displayLearnedSoFar / formatRoleLine removed —
+// the new metronome flow has only one continuous "phase" so the
+// phase-advance machinery isn't needed.)
 
-// Render the cumulative learning insight into the popup. Called between
-// phases so the user watches the template build up: after phase 1 you
-// see DOWN's metrics; after phase 2, UP is added; after the paired
-// phases, dwell measurements appear.
-function displayLearnedSoFar() {
-  const el = $("guided-learned");
-  if (!el || !state.guided) return;
-  const obs = state.guided.observations;
-  const lines = [];
-
-  const downObs = obs.filter((o) => o.label.startsWith("down-"));
-  if (downObs.length) lines.push(formatRoleLine("DOWN", downObs));
-
-  const upObs = obs.filter((o) => o.label.startsWith("up-"));
-  if (upObs.length) lines.push(formatRoleLine("UP", upObs));
-
-  const longDwells = state.guided.observedDwells
-    .filter((d) => d.phase === "long-hold").map((d) => d.gapMs);
-  const natDwells = state.guided.observedDwells
-    .filter((d) => d.phase === "natural").map((d) => d.gapMs);
-  if (longDwells.length) {
-    longDwells.sort((a, b) => a - b);
-    lines.push(`hold dwell ~<strong>${Math.round(longDwells[Math.floor(longDwells.length / 2)])} ms</strong>`);
-  }
-  if (natDwells.length) {
-    natDwells.sort((a, b) => a - b);
-    lines.push(`natural dwell ~<strong>${Math.round(natDwells[Math.floor(natDwells.length / 2)])} ms</strong>`);
-  }
-
-  if (!lines.length) {
-    el.classList.add("hidden");
-    el.innerHTML = "";
-  } else {
-    el.innerHTML = lines.join("<br>");
-    el.classList.remove("hidden");
-  }
-}
-
-function formatRoleLine(label, obs) {
-  const peaks = obs.map((o) => o.peak).sort((a, b) => a - b);
-  const attacks = obs.map((o) => o.attackMs).sort((a, b) => a - b);
-  const mp = peaks[Math.floor(peaks.length / 2)];
-  const ma = attacks[Math.floor(attacks.length / 2)];
-  return `<strong>${label}</strong> · ${obs.length} sample${obs.length === 1 ? "" : "s"} · peak ${mp.toFixed(2)} · attack ${ma.toFixed(0)} ms`;
-}
-
-function skipGuidedPhase() {
-  if (!state.guided) return;
-  advanceGuidedPhase();
-}
 
 function cancelGuided() {
   if (!state.guided) return;
   finishGuided(true);
 }
 
+// Threshold for a "good enough" session: anything below this number of
+// kept samples surfaces the summary modal asking the user to retry
+// (matching was hard / too few clean cycles).
+const REC_MIN_ACCEPTABLE = 15;
+
 async function finishGuided(cancelled) {
   const g = state.guided;
-  const total = g ? g.totalCaptured : 0;
   const sw = state.currentSwitch;
-  let calibratedMsg = "";
+  if (!g) return;
 
-  if (g && !cancelled && sw) {
-    // Dwell calibration from the natural-speed phase — that's the dwell
-    // we want the pair coalescer to use in free-form capture. Median +
-    // 50 ms safety margin, clamped to a sane keyboard range.
-    const naturalGaps = g.observedDwells
-      .filter((d) => d.phase === "natural")
-      .map((d) => d.gapMs)
-      .sort((a, b) => a - b);
-    if (naturalGaps.length >= 2) {
-      const median = naturalGaps[Math.floor(naturalGaps.length / 2)];
-      const calibrated = clamp(Math.round((median + 50) / 10) * 10, 200, 500);
-      setSwitchDwell(sw, calibrated);
-      calibratedMsg = ` · dwell ${calibrated} ms`;
-    }
+  if (g.nextBeatTimer) { clearTimeout(g.nextBeatTimer); g.nextBeatTimer = null; }
+  g.active = false;
+  g.listening = false;
 
-    // Build the full template — counts, median metrics per role, and
-    // top spectral resonances of the average DOWN / UP spectrum. Stored
-    // in localStorage as the switch's persistent identity. We need the
-    // saved samples loaded into samplesCache first, so wait for the
-    // most recent loadSwitchSamples to complete.
-    try { await loadSwitchSamples(sw); } catch (_) { /* best-effort */ }
+  if (cancelled || !sw) {
+    state.guided = null;
+    $("guided-modal").classList.add("hidden");
+    _hideSummary();
+    if (state.armed) disarm();
+    refreshPrimary();
+    setStatus(cancelled ? "recording cancelled" : "recording aborted");
+    return;
+  }
 
-    const downObs = g.observations.filter((o) => o.label.startsWith("down-"));
-    const upObs   = g.observations.filter((o) => o.label.startsWith("up-"));
-    const downProfile = computeRoleProfile(sw, "down");
-    const upProfile   = computeRoleProfile(sw, "up");
-    const longDwells  = g.observedDwells.filter((d) => d.phase === "long-hold").map((d) => d.gapMs).sort((a, b) => a - b);
-    const natDwells   = g.observedDwells.filter((d) => d.phase === "natural").map((d) => d.gapMs).sort((a, b) => a - b);
+  $("guided-status").textContent = "processing…";
 
-    const tpl = {
-      down: rolledUp(downObs, downProfile),
-      up:   rolledUp(upObs,   upProfile),
-      longDwellMs: longDwells.length ? Math.round(longDwells[Math.floor(longDwells.length / 2)]) : null,
-      naturalDwellMs: natDwells.length ? Math.round(natDwells[Math.floor(natDwells.length / 2)]) : null,
+  const pcm = new Float32Array(g.chunksLen);
+  let off = 0;
+  for (const c of g.chunks) { pcm.set(c, off); off += c.length; }
+  g.chunks = [];
+
+  const sr = state.sampleRate;
+  const cycles = _detectCyclesFromPcm(pcm, sr, g.beatTimes, g.noiseProfile);
+  const scored = cycles.map((c) => ({ ...c, score: _scoreFromPcm(c, pcm, sr) }));
+  const selected = _selectByBeatRange(scored, REC_KEEP_N, REC_BINS, g.beatTimes.length);
+  const pairedCount = scored.filter((c) => c.paired).length;
+  const pairRate = scored.length ? pairedCount / scored.length : 0;
+  console.log("[thock] session:", {
+    beats: g.beatTimes.length,
+    cyclesDetected: cycles.length,
+    paired: pairedCount,
+    selected: selected.length,
+  });
+
+  g.processed = { pcm, sr, cycles, selected, pairedCount, pairRate, sessionStartAbs: 0 };
+
+  // Below the bar — let the user decide whether to keep or retry.
+  if (selected.length < REC_MIN_ACCEPTABLE) {
+    _showSummary({
+      kept: selected.length,
+      cycles: cycles.length,
+      paired: pairedCount,
+      pairRate,
+      good: false,
+    });
+    return;
+  }
+
+  // Good run — commit immediately.
+  await _commitGuidedSession();
+}
+
+function _showSummary({ kept, cycles, paired, pairRate, good }) {
+  const sum = $("guided-summary");
+  if (!sum) return;
+  const metro = $("metro");
+  if (metro) metro.style.display = "none";
+  $("guided-hint").style.display = "none";
+  $("guided-status").textContent = "";
+
+  const headline = good
+    ? `kept <strong>${kept}</strong> samples across the tempo range`
+    : `only <strong>${kept}</strong> usable samples · this is probably too few`;
+  const reasons = [];
+  if (pairRate < 0.5) reasons.push(`pairing was difficult (${Math.round(pairRate * 100)}% of cycles paired)`);
+  if (cycles < 30) reasons.push(`only ${cycles} cycles detected (target ${REC_BEATS})`);
+  const reasonLine = reasons.length ? `<div class="summary-detail">${reasons.join(" · ")}</div>` : "";
+
+  sum.innerHTML =
+    `<div class="summary-headline">${headline}</div>` +
+    reasonLine +
+    `<div class="summary-detail">try again to improve quality, or keep what we have.</div>`;
+  sum.classList.remove("hidden");
+
+  $("guided-retry").classList.remove("hidden");
+  $("guided-accept").classList.remove("hidden");
+  $("guided-cancel").textContent = "discard";
+}
+
+function _hideSummary() {
+  const sum = $("guided-summary");
+  if (sum) { sum.classList.add("hidden"); sum.innerHTML = ""; }
+  const metro = $("metro");
+  if (metro) metro.style.display = "";
+  const hint = $("guided-hint");
+  if (hint) hint.style.display = "";
+  $("guided-retry").classList.add("hidden");
+  $("guided-accept").classList.add("hidden");
+  $("guided-cancel").textContent = "cancel";
+}
+
+async function _commitGuidedSession() {
+  const g = state.guided;
+  const sw = state.currentSwitch;
+  if (!g || !g.processed || !sw) return;
+  const { pcm, sr, cycles, selected, sessionStartAbs } = g.processed;
+
+  $("guided-status").textContent = `saving ${selected.length}…`;
+
+  let saved = 0;
+  for (const c of selected) {
+    try {
+      const startIdx = Math.max(0, c.startAbs - sessionStartAbs);
+      const endIdx = Math.min(pcm.length, c.endAbs - sessionStartAbs);
+      if (endIdx - startIdx < sr * 0.012) continue;
+      const slice = pcm.slice(startIdx, endIdx);
+      const wav = encodeWav(slice, sr);
+      await fsSaveSample(sw, wav, null);
+      saved++;
+    } catch (e) { console.error("save failed", e); }
+  }
+
+  // Dwell calibration from paired cycles.
+  const gaps = g.processed.cycles
+    .filter((c) => c.paired)
+    .map((c) => c.dwellMs)
+    .sort((a, b) => a - b);
+  if (gaps.length >= 4) {
+    const median = gaps[Math.floor(gaps.length / 2)];
+    const calibrated = clamp(Math.round((median + 80) / 10) * 10, 200, 500);
+    setSwitchDwell(sw, calibrated);
+  }
+
+  // Persist noise spectrum on template (denoise-on-save will read this later).
+  const np = g.noiseProfile;
+  if (np && np.framesAccum >= 5) {
+    const noiseSpectrum = new Array(np.mag.length);
+    for (let i = 0; i < np.mag.length; i++) noiseSpectrum[i] = np.mag[i] / np.framesAccum;
+    const existing = state.switchTemplates.get(sw) || {};
+    setSwitchTemplate(sw, {
+      ...existing,
+      noiseSpectrum,
+      noiseFftN: np.fftN,
+      noiseFramesAccum: np.framesAccum,
+      noiseSr: sr,
+      sampleCount: saved,
       learnedAt: Date.now(),
-    };
-    if (tpl.down || tpl.up) setSwitchTemplate(sw, tpl);
+    });
   }
 
   state.guided = null;
   $("guided-modal").classList.add("hidden");
+  _hideSummary();
   if (state.armed) disarm();
-  // template may have just been written — flip primary button to "▶ start"
+  await refreshSwitches();
+  if (sw === state.currentSwitch) await loadSwitchSamples(sw);
   refreshPrimary();
-  if (cancelled) {
-    setStatus(`guided cancelled · ${total} sample${total === 1 ? "" : "s"} kept`);
-  } else {
-    setStatus(`guided complete · ${total} samples${calibratedMsg}`);
-    if (sw === state.currentSwitch) loadSwitchSamples(sw).catch(() => {});
-  }
+  setStatus(`recorded · ${saved} samples kept (from ${cycles.length} cycles)`);
 }
 
-// Roll an array of observations + an averaged profile into the per-role
-// summary stored on the switch template. Keeps only what we'd want to
-// see at a glance later — counts, medians, top resonant frequencies.
-function rolledUp(obs, profile) {
-  if (!obs.length) return null;
-  const peaks = obs.map((o) => o.peak).sort((a, b) => a - b);
-  const attacks = obs.map((o) => o.attackMs).sort((a, b) => a - b);
+// User chose "try again" — discard the processed session and restart
+// the metronome run with a fresh countdown. No files written.
+async function _retryGuidedSession() {
+  const g = state.guided;
+  if (!g) return;
+  g.processed = null;
+  g.beatTimes = [];
+  g.chunks = [];
+  g.chunksLen = 0;
+  g.beat = 0;
+  g.noiseProfile = { fftN: 1024, mag: new Float64Array(513), framesAccum: 0, lastAccumAbs: 0 };
+  _hideSummary();
+  _setProgress(0);
+  $("guided-status").textContent = "ready…";
+  beginRecordingCountdown();
+}
+
+// ----- post-hoc tap detection -------------------------------------
+//
+// Anchored to the metronome beat times: for each beat, scan a short
+// window around it for the loudest transient, refine to its onset,
+// then look forward in time for a quieter release transient. Beats
+// where no transient pops above noise are dropped silently. This
+// replaces the live trigger entirely — the trigger was missing soft
+// taps that were visually obvious in the scope.
+
+const _RMS_HOP_MS = 3;     // envelope resolution
+const _SEARCH_PRE_MS = 120;   // ms before beat to start looking
+const _SEARCH_POST_MS = 450;  // ms after beat to stop looking
+const _RELEASE_MAX_MS = 350;  // max press→release gap
+const _RELEASE_MIN_MS = 18;   // min press→release gap (skip press's own tail)
+const _SNR_THR = 4.0;         // must exceed this × noise RMS to count
+
+function _buildEnvelope(pcm, hop) {
+  const env = new Float32Array(Math.ceil(pcm.length / hop));
+  for (let e = 0, i = 0; e < env.length; e++) {
+    let p = 0;
+    const end = Math.min(pcm.length, i + hop);
+    for (let j = i; j < end; j++) {
+      const a = pcm[j] < 0 ? -pcm[j] : pcm[j];
+      if (a > p) p = a;
+    }
+    env[e] = p;
+    i = end;
+  }
+  return env;
+}
+
+function _rmsOf(pcm, start, end) {
+  start = Math.max(0, start | 0);
+  end = Math.min(pcm.length, end | 0);
+  if (end <= start) return 0;
+  let s = 0;
+  for (let i = start; i < end; i++) s += pcm[i] * pcm[i];
+  return Math.sqrt(s / (end - start));
+}
+
+// Find the first onset in [startSamp, endSamp] where the envelope
+// rises above `threshold`. Refines the onset to the local peak +
+// walks back to the rising edge (20 % of peak).
+function _findOnsetInRange(pcm, env, hop, startSamp, endSamp, threshold) {
+  const startHop = Math.max(0, Math.floor(startSamp / hop));
+  const endHop = Math.min(env.length, Math.ceil(endSamp / hop));
+  let trigHop = -1;
+  for (let e = startHop; e < endHop; e++) {
+    if (env[e] >= threshold) { trigHop = e; break; }
+  }
+  if (trigHop < 0) return null;
+  // local peak within ~30 ms
+  const peakWin = Math.floor(0.030 * (hop > 0 ? (env.length * hop / pcm.length) : 1));
+  let peakHop = trigHop, peakVal = env[trigHop];
+  for (let e = trigHop; e < Math.min(endHop, trigHop + 12); e++) {
+    if (env[e] > peakVal) { peakVal = env[e]; peakHop = e; }
+  }
+  // walk back from peak to find onset (envelope ≤ 20 % of peak)
+  let onsetHop = peakHop;
+  const onsetLevel = peakVal * 0.20;
+  for (let e = peakHop; e >= startHop; e--) {
+    if (env[e] < onsetLevel) { onsetHop = e + 1; break; }
+  }
   return {
-    count: obs.length,
-    medianPeak: peaks[Math.floor(peaks.length / 2)],
-    medianAttackMs: attacks[Math.floor(attacks.length / 2)],
-    topResonancesHz: profile && profile.peaks
-      ? profile.peaks.slice(0, 3).map((p) => Math.round(p.freq))
-      : null,
+    onsetSamp: Math.max(0, onsetHop * hop),
+    peakSamp: peakHop * hop,
+    peak: peakVal,
   };
 }
 
+function _detectCyclesFromPcm(pcm, sr, beatTimes, noiseProfile) {
+  if (!pcm.length || !beatTimes.length) return [];
+  const hop = Math.max(1, Math.floor((_RMS_HOP_MS / 1000) * sr));
+  const env = _buildEnvelope(pcm, hop);
+  // Noise floor from the first ~2 s of capture (before metronome starts).
+  // Falls back to a small floor if the preamble was noisy or short.
+  const preambleEnd = Math.min(pcm.length, Math.max(beatTimes[0] - sr * 0.2, sr * 0.5));
+  const noiseRms = Math.max(_rmsOf(pcm, 0, preambleEnd), 0.0005);
+  const onsetThr = Math.max(noiseRms * _SNR_THR, 0.0015);
+  const releaseSearchStart = Math.floor((_RELEASE_MIN_MS / 1000) * sr);
+  const releaseSearchEnd = Math.floor((_RELEASE_MAX_MS / 1000) * sr);
+  const preSamp = Math.floor((_SEARCH_PRE_MS / 1000) * sr);
+  const postSamp = Math.floor((_SEARCH_POST_MS / 1000) * sr);
+
+  const cycles = [];
+  let lastPressEndAbs = -1;
+  for (let bi = 0; bi < beatTimes.length; bi++) {
+    const beatT = beatTimes[bi];
+    // Don't search before the previous press's release (avoids
+    // re-detecting the tail of the prior tap as this beat's press).
+    const winStart = Math.max(lastPressEndAbs + 1, beatT - preSamp);
+    const nextBeat = bi + 1 < beatTimes.length ? beatTimes[bi + 1] : pcm.length;
+    const winEnd = Math.min(pcm.length, Math.min(beatT + postSamp, nextBeat - hop));
+    const press = _findOnsetInRange(pcm, env, hop, winStart, winEnd, onsetThr);
+    if (!press) continue;
+
+    // Look for release: a second transient starting ≥ 18 ms after press
+    // peak, quieter than press peak. Constrained to before the next beat.
+    const relStart = press.peakSamp + releaseSearchStart;
+    const relEnd = Math.min(pcm.length, press.peakSamp + releaseSearchEnd, nextBeat - hop);
+    const releaseThr = Math.max(noiseRms * 3.0, press.peak * 0.18);
+    const release = _findOnsetInRange(pcm, env, hop, relStart, relEnd, releaseThr);
+    const paired = !!release;
+    const dwellMs = paired ? ((release.onsetSamp - press.onsetSamp) / sr) * 1000 : null;
+    const cycleStart = Math.max(0, press.onsetSamp - Math.floor(0.025 * sr));
+    const cycleEnd = paired
+      ? Math.min(pcm.length, release.peakSamp + Math.floor(0.040 * sr))
+      : Math.min(pcm.length, press.peakSamp + Math.floor(0.100 * sr));
+    cycles.push({
+      startAbs: cycleStart,
+      endAbs: cycleEnd,
+      pressPeak: press.peak,
+      releasePeak: paired ? release.peak : 0,
+      dwellMs,
+      paired,
+      beatIdx: bi,
+      noiseRms,
+    });
+    lastPressEndAbs = cycleEnd;
+  }
+  return cycles;
+}
+
+function _scoreFromPcm(c, pcm, sr) {
+  const snr = Math.log(c.pressPeak / Math.max(c.noiseRms, 1e-5) + 1);
+  const pairBonus = c.paired ? 0.6 : 0;
+  // Penalize cycles whose window is suspiciously long (often means we
+  // ran into the next beat's transient).
+  const lengthMs = ((c.endAbs - c.startAbs) / sr) * 1000;
+  const lengthPenalty = lengthMs > 350 ? -0.3 : 0;
+  return snr + pairBonus + lengthPenalty;
+}
+
+// Bin by beat index directly (we know each beat's position on the
+// tempo ramp) and take the top-scorers per bin. Guarantees the kept
+// samples span the slow→fast range.
+function _selectByBeatRange(scored, keepN, bins, totalBeats) {
+  if (!scored.length) return [];
+  const perBin = Math.ceil(keepN / bins);
+  const beatsPerBin = Math.max(1, Math.ceil(totalBeats / bins));
+  const buckets = Array.from({ length: bins }, () => []);
+  for (const c of scored) {
+    const idx = Math.min(bins - 1, Math.floor((c.beatIdx ?? 0) / beatsPerBin));
+    buckets[idx].push(c);
+  }
+  const selected = [];
+  for (const b of buckets) {
+    b.sort((x, y) => y.score - x.score);
+    selected.push(...b.slice(0, perBin));
+  }
+  selected.sort((a, b) => a.startAbs - b.startAbs);
+  return selected.slice(0, keepN);
+}
+
+// Takes one FFT-sized window from the most recent ring buffer audio,
+// magnitude-FFTs it, and accumulates into the guided session's noise
+// profile. Called only when state.guided.listening is false (3-2-1
+// countdown or cooldown), so the window is genuinely quiet.
+function _accumulateGuidedNoiseFrame() {
+  const g = state.guided;
+  if (!g || !g.noiseProfile) return;
+  const np = g.noiseProfile;
+  const N = np.fftN;
+  const sr = state.sampleRate;
+  const startAbs = state.absIdx - N;
+  const pcm = readRingRange(startAbs, state.absIdx);
+  if (pcm.length < N) return;
+  const re = new Float64Array(N);
+  const im = new Float64Array(N);
+  const win = getWindow("hann", N);
+  for (let i = 0; i < N; i++) re[i] = pcm[i] * win[i];
+  fft(re, im);
+  const mag = np.mag;
+  for (let i = 0; i < mag.length; i++) {
+    mag[i] += Math.sqrt(re[i] * re[i] + im[i] * im[i]);
+  }
+  np.framesAccum++;
+}
+
 function updateGuidedUI() {
-  if (!state.guided) return;
-  const idx = state.guided.phaseIdx;
-  const phase = GUIDED_PHASES[idx];
-  if (!phase) return;
-  $("guided-card-switch").textContent = state.currentSwitch || "—";
-  $("guided-phase-num").textContent =
-    `phase ${idx + 1} of ${GUIDED_PHASES.length}`;
-  $("guided-label").textContent = phase.label;
-  $("guided-hint").textContent = phase.hint;
-  if (state.guided.countdown > 0) {
-    $("guided-counter").textContent = String(state.guided.countdown);
-    $("guided-status").textContent = "ready…";
-  } else {
-    const got = state.guided.cyclesInPhase;
-    const need = phase.cycles;
-    const dots = "●".repeat(got) + "○".repeat(Math.max(0, need - got));
-    $("guided-counter").textContent = dots;
-    $("guided-status").textContent =
-      `${got} of ${need} cycle${need === 1 ? "" : "s"}`;
+  const g = state.guided;
+  if (!g) return;
+  $("guided-card-switch").textContent = displayName(state.currentSwitch);
+  const bpmEl = $("guided-phase-num");
+  if (bpmEl) {
+    if (g.beat > 0) {
+      bpmEl.textContent = `${Math.round(bpmAtBeat(g.beat))} BPM`;
+    } else {
+      bpmEl.textContent = "ready";
+    }
+  }
+  const status = $("guided-status");
+  if (status) {
+    if (g.countdown > 0) status.textContent = "ready…";
+    else status.textContent = `${g.beat} / ${REC_BEATS}`;
   }
 }
 
@@ -1281,111 +1635,14 @@ function flushPendingWavefront() {
 // wavefront and ignored — they're real audio but not what we're after
 // in this phase. Per-cycle cooldown prevents the discarded wavefront
 // from accidentally being counted as the next cycle's start.
-function handleGuidedWavefront(startAbs, endAbs, peak, attackMs, durationMs) {
-  const g = state.guided;
-  if (!g) return;
-
-  // Inter-cycle cooldown — between press cycles we ignore wavefronts so
-  // the user has a beat to reset and we don't double-count.
-  const now = performance.now();
-  if (g.cycleCooldownUntil && now < g.cycleCooldownUntil) {
-    return;
-  }
-
-  const phase = GUIDED_PHASES[g.phaseIdx];
-  const slotIdx = g.wavefrontInCycle;
-  const label = phase.captures[slotIdx];
-  const isPress = slotIdx === 0;
-
-  // Record the dwell when we see the release of a cycle whose press
-  // we just registered. Measured start-to-start: that's the full
-  // press-to-release cycle the user perceives. Measuring end-to-start
-  // would lose the wavefront-tail time and produce dwells biased
-  // ~50 ms low — exactly the bug that made the natural-speed calibration
-  // hit the clamp floor and silently break free-form pairing.
-  if (!isPress && g.lastPressStartAbs != null) {
-    const cycleMs = ((startAbs - g.lastPressStartAbs) / state.sampleRate) * 1000;
-    g.observedDwells.push({ phase: phase.id, gapMs: cycleMs });
-  }
-  if (isPress) g.lastPressStartAbs = startAbs;
-
-  if (label) {
-    g.observations.push({ phase: phase.id, label, peak, attackMs, durationMs });
-    saveGuidedWavefront(startAbs, endAbs, g.phaseIdx, label);
-  } else {
-    // discarded wavefront — log it for the status line so the user knows
-    // we saw something
-    setStatus(`guided · ${phase.label} · (skipped ${isPress ? "press" : "release"})`);
-  }
-
-  // brief "✓ GOT IT" flash on captured slots; quieter on discarded ones
-  if (label) {
-    setStageCaptured();
-  } else {
-    const el = $("guided-stage");
-    if (el) {
-      el.dataset.step = "ready";
-      $("guided-stage-icon").textContent = "·";
-      $("guided-stage-label").textContent = "ok";
-      $("guided-stage-sub").textContent = "";
-    }
-  }
-
-  g.wavefrontInCycle++;
-  if (g.wavefrontInCycle >= phase.captures.length) {
-    g.wavefrontInCycle = 0;
-    g.cyclesInPhase++;
-    g.lastPressStartAbs = null;
-    g.cycleCooldownUntil = now + 800;
-    updateGuidedUI();
-    if (g.cyclesInPhase >= phase.cycles) {
-      // phase advance handler takes over the stage
-      advanceGuidedPhase();
-    } else {
-      // after the cooldown flash, prompt the next cycle's first slot
-      setTimeout(() => {
-        if (!state.guided || state.guided.phaseIdx !== g.phaseIdx) return;
-        setStageCooldown();
-        setTimeout(() => {
-          if (!state.guided || state.guided.phaseIdx !== g.phaseIdx) return;
-          setStageForSlot(phase, 0);
-          updateGuidedUI();
-        }, 350);
-      }, 250);
-    }
-  } else {
-    // mid-cycle — show the next slot's prompt after a brief beat
-    setTimeout(() => {
-      if (!state.guided) return;
-      const p = GUIDED_PHASES[state.guided.phaseIdx];
-      if (p !== phase) return;
-      setStageForSlot(p, g.wavefrontInCycle);
-      updateGuidedUI();
-    }, 250);
-    updateGuidedUI();
-  }
-}
-
-async function saveGuidedWavefront(startAbs, endAbs, phaseIdx, label) {
-  const sw = state.currentSwitch;
-  if (!sw || !state.storageHandle) return;
-  const sr = state.sampleRate;
-  const pcm = readRingRange(startAbs, endAbs);
-  if (pcm.length < sr * 0.012) return;
-  const phaseNum = String(phaseIdx + 1).padStart(2, "0");
-  const prefix = `${phaseNum}-${label}`;
-  const wav = encodeWav(pcm, sr);
-  try {
-    await fsSaveSample(sw, wav, prefix);
-    state.sessionCount++;
-    if (state.guided) state.guided.totalCaptured++;
-    $("session-count").textContent = String(state.sessionCount);
-    await refreshSwitches();
-    if (sw === state.currentSwitch) await loadSwitchSamples(sw);
-  } catch (e) {
-    console.error("guided save failed", e);
-    setStatus("save failed: " + e.message);
-  }
+// Live trigger is no longer used during recording — its threshold
+// drops too many soft taps that are clearly visible in the scope.
+// Instead, finishGuided runs a post-hoc onset detector over the full
+// captured PCM using beat times as priors. This is left as a no-op
+// stub so emitWavefront's existing routing continues to short-circuit
+// cleanly when state.guided is set.
+function handleGuidedWavefront(_startAbs, _endAbs, _peak, _attackMs, _durationMs) {
+  // no-op
 }
 
 function _clearPendingFlush() {
@@ -1396,36 +1653,20 @@ function _clearPendingFlush() {
   state.pendingWavefront = null;
 }
 
+// saveCycle is now only used by the (legacy) freeform pair coalescer
+// path, which the new metronome flow bypasses. Kept simple — write
+// the WAV with a timestamp-only filename, refresh the grid.
 async function saveCycle(startAbs, endAbs, kind) {
   const sw = state.currentSwitch;
   if (!sw || !state.storageHandle) return;
   const pcm = readRingRange(startAbs, endAbs);
   const sr = state.sampleRate;
   if (pcm.length < sr * 0.012) return;
-
-  // Filename prefix when in a guided session — phase id sorts samples
-  // by phase when the directory is listed alphabetically.
-  let prefix = null;
-  if (state.guided) {
-    const phase = GUIDED_PHASES[state.guided.phaseIdx];
-    const phaseNum = String(state.guided.phaseIdx + 1).padStart(2, "0");
-    prefix = `${phaseNum}-${phase.id}`;
-  }
-
   const wav = encodeWav(pcm, sr);
   try {
-    await fsSaveSample(sw, wav, prefix);
+    await fsSaveSample(sw, wav, null);
     state.sessionCount++;
     $("session-count").textContent = String(state.sessionCount);
-    if (state.guided) {
-      state.guided.capturedInPhase++;
-      state.guided.totalCaptured++;
-      updateGuidedUI();
-      const target = GUIDED_PHASES[state.guided.phaseIdx].count;
-      if (state.guided.capturedInPhase >= target) {
-        advanceGuidedPhase();
-      }
-    }
     await refreshSwitches();
     if (sw === state.currentSwitch) await loadSwitchSamples(sw);
   } catch (e) {
@@ -1462,6 +1703,13 @@ async function refreshSwitches() {
 }
 
 async function selectSwitch(name) {
+  // Stop any play-all loop bound to the prior switch's samples — leaving
+  // it running across a switch change would mix the wrong sound source.
+  if (state.playAll && state.playAll.active) {
+    state.playAll.active = false;
+    const btn = $("play-all-btn");
+    if (btn) btn.textContent = "▶ play all";
+  }
   state.currentSwitch = name;
   // bidirectional sync: the typist pane mirrors the active switch so the
   // two panels are always coherent. Changing one changes the other.
@@ -1470,14 +1718,15 @@ async function selectSwitch(name) {
   updateTypingButtons();
   // primary button reflects "calibrated yet?" — flip to calibrate-or-arm
   refreshPrimary();
-  if ($("meta-switch")) $("meta-switch").textContent = name;
-  setStatus(`switch · ${name}`);
+  if ($("meta-switch")) $("meta-switch").textContent = displayName(name);
+  setStatus(`switch · ${displayName(name)}`);
   await loadSwitchSamples(name);
 }
 
 async function loadSwitchSamples(name) {
   const sw = state.switches.find((s) => s.name === name);
-  $("fp-name").textContent = name || "—";
+  $("fp-name").textContent = displayName(name);
+  renderFingerprintTags(name);
   if (!sw) {
     state.switchSamples = [];
     renderTiles();
@@ -2341,9 +2590,10 @@ async function startTyping() {
     state.typingSwitch = first.name;
   }
   state.typingActive = true;
-  $("type-start").classList.add("busy");
+  const tog = $("type-toggle");
+  if (tog) { tog.textContent = "■ stop"; tog.classList.add("armed"); }
   $("typist-status").classList.add("typing");
-  $("typist-status").textContent = "typing · " + state.typingSwitch;
+  $("typist-status").textContent = "typing · " + displayName(state.typingSwitch);
   updateTypingButtons();
 
   let stop = false;
@@ -2360,14 +2610,13 @@ async function startTyping() {
   // read as "a person typing" instead of "samples firing."
   let ampTarget = 0.5;
   state.typingRecentIdx.length = 0;
-  const mode = ($("typist-mode") && $("typist-mode").value) || "passages";
-  const stream = makeTextStream(mode);
+  const stream = makeTextStream();
 
   try {
     while (!stop) {
       if (state.typingSwitch !== poolName) {
         poolName = state.typingSwitch;
-        $("typist-status").textContent = "typing · " + poolName;
+        $("typist-status").textContent = "typing · " + displayName(poolName);
         pool = await loadPoolForSwitch(poolName);
         state.typingRecentIdx.length = 0;
       }
@@ -2463,7 +2712,8 @@ async function startTyping() {
   } finally {
     state.typingActive = false;
     state.typingStop = null;
-    $("type-start").classList.remove("busy");
+    const tog = $("type-toggle");
+    if (tog) { tog.textContent = "▶ start"; tog.classList.remove("armed", "busy"); }
     $("typist-status").classList.remove("typing");
     $("typist-status").textContent = "idle";
     updateTypingButtons();
@@ -2474,7 +2724,7 @@ function stopTyping() { if (state.typingStop) state.typingStop(); }
 
 function setTypingSwitch(name) {
   state.typingSwitch = name;
-  if (state.typingActive) $("typist-status").textContent = "typing · " + name;
+  if (state.typingActive) $("typist-status").textContent = "typing · " + displayName(name);
   // sync the switch pane so fingerprint / samples / inspection follow
   if (state.currentSwitch !== name) selectSwitch(name);
   else updateTypingButtons();
@@ -2531,35 +2781,85 @@ const SLOW_PAIRS = new Set([
   "wq", "xz", "zx", "jh", "vc", "cv", "gb", "bg",
 ]);
 
-// monkeytype-ish corpora and a character stream that the typist iterates.
-const TOP_WORDS = (
-  "the of to and a in is it you that he was for on are with as i his they " +
-  "be at one have this from or had by not word but what some we can out other were all " +
-  "there when up use your how said an each she which do their time if will way about many then " +
-  "them write would like so these her long make thing see him two has look more day could go come " +
-  "did number sound no most people my over know water than call first who may down side been now find"
-).split(" ");
+// Live article source. Tries libertis.net's common RSS/Atom paths via
+// a direct fetch first (works if their CORS allows it), then via a
+// public proxy as fallback. On any failure leaves state.articles null
+// and the typist falls back to the classic PASSAGES below — typing
+// always works regardless of network state.
+async function loadArticles() {
+  const candidates = [
+    "https://libertis.net/feed/",
+    "https://libertis.net/feed",
+    "https://libertis.net/rss",
+    "https://libertis.net/rss.xml",
+    "https://libertis.net/feed.xml",
+    "https://libertis.net/atom.xml",
+    "https://libertis.net/index.xml",
+  ];
+  const proxy = (url) => "https://api.allorigins.win/raw?url=" + encodeURIComponent(url);
+  for (const direct of candidates) {
+    for (const url of [direct, proxy(direct)]) {
+      try {
+        const r = await fetch(url);
+        if (!r.ok) continue;
+        const text = await r.text();
+        const articles = parseFeedToPassages(text);
+        if (articles.length >= 3) {
+          state.articles = articles;
+          updateTypistSource();
+          console.log(`thock: ${articles.length} articles loaded from ${direct}`);
+          return;
+        }
+      } catch (e) { /* try next candidate */ }
+    }
+  }
+  console.warn("thock: libertis.net unreachable, typist using classic passages");
+}
 
-const PANGRAMS = [
-  "the quick brown fox jumps over the lazy dog",
-  "pack my box with five dozen liquor jugs",
-  "how vexingly quick daft zebras jump",
-  "sphinx of black quartz judge my vow",
-  "the five boxing wizards jump quickly",
-  "jackdaws love my big sphinx of quartz",
-  "amazingly few discotheques provide jukeboxes",
-];
+function parseFeedToPassages(xml) {
+  const out = [];
+  const stripHtml = (s) => s
+    .replace(/<!\[CDATA\[|\]\]>/g, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  const extract = (itemRe, bodyRe) => {
+    let m;
+    while ((m = itemRe.exec(xml))) {
+      const body = m[1];
+      const d = body.match(bodyRe);
+      if (!d) continue;
+      let text = stripHtml(d[1]);
+      if (text.length < 100) continue;
+      if (text.length > 1500) text = text.slice(0, 1500);
+      out.push(text);
+    }
+  };
+  extract(/<item>([\s\S]*?)<\/item>/gi,
+          /<(?:content:encoded|description|summary)[^>]*>([\s\S]*?)<\/(?:content:encoded|description|summary)>/i);
+  if (!out.length) {
+    extract(/<entry[^>]*>([\s\S]*?)<\/entry>/gi,
+            /<(?:content|summary)[^>]*>([\s\S]*?)<\/(?:content|summary)>/i);
+  }
+  return out;
+}
 
-const QUOTES = [
-  "the only way to do great work is to love what you do",
-  "imagination is more important than knowledge",
-  "in the middle of difficulty lies opportunity",
-  "simplicity is the ultimate sophistication",
-  "stay hungry stay foolish",
-  "do not go where the path may lead",
-  "the future depends on what you do today",
-  "what we know is a drop what we dont know is an ocean",
-];
+function updateTypistSource() {
+  const el = $("typist-source");
+  if (!el) return;
+  if (state.articles && state.articles.length) {
+    el.textContent = `source: libertis.net (${state.articles.length} articles)`;
+  } else {
+    el.textContent = "source: classic passages";
+  }
+}
 
 // Famous opening passages — the default typist material. Long enough that
 // at 100 wpm each passage is one to three minutes of typing (giving you
@@ -2639,28 +2939,16 @@ const PASSAGES = [
   "grassy and wanted wear.",
 ];
 
-// returns { next() → char | null } — `null` means random (no char to type)
-function makeTextStream(mode) {
-  if (mode === "random") return { next: () => null };
+// Source: libertis.net articles when reachable, classic PASSAGES as
+// fallback. Mode selector was removed — one source, picked at load time.
+function makeTextStream() {
+  const source = (state.articles && state.articles.length >= 3)
+    ? state.articles
+    : PASSAGES;
   let pending = "";
   let cycleIdx = 0;
   function refill() {
-    if (mode === "passages") {
-      pending += PASSAGES[cycleIdx++ % PASSAGES.length] + "  ·  ";
-    } else if (mode === "words") {
-      const n = 4 + Math.floor(Math.random() * 5);
-      const w = [];
-      for (let i = 0; i < n; i++) {
-        w.push(TOP_WORDS[Math.floor(Math.random() * TOP_WORDS.length)]);
-      }
-      pending += w.join(" ") + " ";
-    } else if (mode === "pangrams") {
-      pending += PANGRAMS[cycleIdx++ % PANGRAMS.length] + "  ·  ";
-    } else if (mode === "quotes") {
-      pending += QUOTES[cycleIdx++ % QUOTES.length] + "  ·  ";
-    } else {
-      pending += " ";
-    }
+    pending += source[cycleIdx++ % source.length] + "  ·  ";
   }
   refill();
   return {
@@ -2810,34 +3098,30 @@ function setStatus(s) { $("status-text").textContent = s; }
 function setPrimary(mode) {
   const b = $("primary");
   b.classList.remove("armed", "busy");
-  if (mode === "enable")         b.textContent = "enable mic";
-  else if (mode === "calibrate") b.textContent = "▶ calibrate switch";
-  else if (mode === "arm")       b.textContent = "▶ start";
-  else if (mode === "armed")     { b.textContent = "■ stop"; b.classList.add("armed"); }
+  if (mode === "enable")           b.textContent = "enable mic";
+  else if (mode === "new-switch")  b.textContent = "+ create a switch";
+  else if (mode === "record")      b.textContent = "▶ record samples";
 }
 
-// The primary button is a chameleon — its action depends on what the
-// user still needs to do. Calibration is the precondition for freeform
-// capture: without a learned template we don't know what a press of
-// this switch sounds like, so triggering on broadband peaks alone is
-// guesswork. Walk the prerequisites in order.
+// Single-flow primary button: enable mic → create switch → record.
+// The metronome-driven recording IS the calibration; no separate
+// "▶ start" freeform state.
 function currentPrimaryMode() {
-  if (state.armed) return "armed";
   if (!state.audioCtx || !state.stream) return "enable";
-  // no switch selected → arm() will alert and tell them to make one;
-  // we still show "enable mic" as the next visible action.
-  if (!state.currentSwitch) return "enable";
-  if (!state.switchTemplates.has(state.currentSwitch)) return "calibrate";
-  return "arm";
+  if (!state.currentSwitch) return "new-switch";
+  return "record";
 }
 
 function refreshPrimary() {
   setPrimary(currentPrimaryMode());
   const recal = $("guided-btn");
   if (!recal) return;
-  if (state.currentSwitch && state.switchTemplates.has(state.currentSwitch)) {
+  // Surface a "re-record" affordance only once the switch has samples
+  // — otherwise the primary "▶ record samples" button does the same job.
+  const sw = state.switches.find((s) => s.name === state.currentSwitch);
+  if (sw && sw.count > 0) {
     recal.classList.remove("hidden");
-    recal.textContent = "re-calibrate";
+    recal.textContent = "re-record";
   } else {
     recal.classList.add("hidden");
   }
@@ -2914,9 +3198,10 @@ function makeSwitchTile(sw, isActive, onSelect) {
   tile.style.setProperty("--c", color);
   tile.innerHTML = `
     <button class="swatch" type="button" aria-label="change color"></button>
-    <span class="name">${sw.name}</span>
+    <span class="name"></span>
     <span class="ct">${sw.count}</span>
   `;
+  tile.querySelector(".name").textContent = displayName(sw.name);
   tile.addEventListener("click", (e) => {
     if (e.target.closest(".swatch")) return;
     onSelect();
@@ -2998,9 +3283,9 @@ function closeColorPicker() {
 function sortedTiles() {
   const order = $("order").value;
   const arr = state.switchSamples.slice();
-  const peak = (t) => t.meta ? t.meta.peak : -1;
-  if (order === "amplitude-asc")  arr.sort((a, b) => peak(a) - peak(b));
-  else if (order === "amplitude-desc") arr.sort((a, b) => peak(b) - peak(a));
+  const dur = (t) => (t.meta && t.meta.buf) ? t.meta.buf.duration : -1;
+  if (order === "duration-asc") arr.sort((a, b) => dur(a) - dur(b));
+  else if (order === "duration-desc") arr.sort((a, b) => dur(b) - dur(a));
   else if (order === "random") arr.sort(() => Math.random() - 0.5);
   return arr;
 }
@@ -3055,6 +3340,42 @@ function playSampleNow(t) {
   src.start();
 }
 
+// Play every loaded sample in current sort order, gap of ~120 ms
+// between each, looping forever until the user clicks the button
+// again. Schedules ahead in the AudioContext clock so the timing
+// is sample-accurate (not setTimeout jitter).
+async function togglePlayAll() {
+  const btn = $("play-all-btn");
+  if (state.playAll && state.playAll.active) {
+    state.playAll.active = false;
+    if (btn) btn.textContent = "▶ play all";
+    return;
+  }
+  await ensureAudioCtx();
+  const tiles = sortedTiles().filter((t) => t.meta && t.meta.buf);
+  if (!tiles.length) { setStatus("no samples to play"); return; }
+  state.playAll = { active: true };
+  if (btn) btn.textContent = "■ stop";
+  const GAP_S = 0.12;
+  let next = state.audioCtx.currentTime + 0.05;
+  let i = 0;
+  while (state.playAll && state.playAll.active) {
+    const t = tiles[i % tiles.length];
+    const buf = t.meta.buf;
+    const src = state.audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(state.audioCtx.destination);
+    src.start(next);
+    next += buf.duration + GAP_S;
+    i++;
+    // Sleep until we're <300 ms ahead so we don't queue thousands of
+    // sources up-front (which would also block stop responsiveness).
+    const aheadMs = (next - state.audioCtx.currentTime) * 1000 - 300;
+    if (aheadMs > 0) await sleep(aheadMs);
+  }
+  if (btn) btn.textContent = "▶ play all";
+}
+
 async function deleteActive() {
   if (!state.activeSample) return;
   if (!confirm(`remove ${state.activeSample.file}?`)) return;
@@ -3071,101 +3392,224 @@ async function deleteActive() {
   if (state.currentSwitch) await loadSwitchSamples(state.currentSwitch);
 }
 
-// ============== presets ============================================
+// ============== library (curated switch catalog) ==================
 //
-// Curated keyswitch datasets hosted as static files alongside the app.
-// /presets/index.json lists them; /presets/<id>/<file>.wav are the WAVs.
-// Importing copies each WAV into the user's storage as a new switch.
+// Hosted as static files alongside the app: /library/index.json lists
+// each switch (family, name, description, color, files); WAVs live at
+// /library/<id>/<file>.wav. The library dialog lets the user pick
+// multiple switches to import in one go, grouped by family. Importing
+// is ADDITIVE only — unticking a switch in the library never deletes
+// the user's local copy of that switch (or any of their own
+// recordings). Removal is intentional, via the per-switch remove
+// button on the main grid.
 
-async function openPresetsDialog() {
-  const list = $("presets-list");
-  list.innerHTML = '<div class="dim">loading…</div>';
-  $("presets-dialog").showModal();
-  let presets = null;
-  try {
-    const r = await fetch("/presets/index.json", { cache: "no-store" });
-    if (r.ok) presets = await r.json();
-  } catch (_) { /* network or 404 — show empty */ }
-  if (!Array.isArray(presets) || presets.length === 0) {
-    list.innerHTML = '<div class="dim">no presets available yet.<br>check back soon.</div>';
-    return;
-  }
-  list.innerHTML = "";
-  for (const p of presets) {
-    const el = document.createElement("div");
-    el.className = "preset-item";
-    el.style.setProperty("--c", p.color || "#f5a623");
-    el.innerHTML = `
-      <div class="preset-dot"></div>
-      <div class="preset-info">
-        <div class="preset-name"></div>
-        <div class="preset-desc"></div>
-      </div>
-      <div class="preset-count"></div>
-      <button class="action small" type="button">import</button>
-    `;
-    el.querySelector(".preset-name").textContent = p.name || p.id;
-    el.querySelector(".preset-desc").textContent = p.description || "";
-    el.querySelector(".preset-count").textContent = `${(p.files || []).length} samples`;
-    el.querySelector("button").addEventListener("click", () => importPreset(p, el));
-    list.appendChild(el);
-  }
+// Infer switch type from description text. Avoids requiring a `type`
+// field in meta.json (it's usually right there in the description) but
+// honors an explicit type field if one's set.
+function _switchType(p) {
+  if (p.type) return String(p.type).toLowerCase();
+  const d = String(p.description || "").toLowerCase();
+  if (d.includes("silent")) return "silent";
+  if (d.includes("clicky")) return "clicky";
+  if (d.includes("tactile")) return "tactile";
+  if (d.includes("linear")) return "linear";
+  return "other";
 }
 
-async function importPreset(preset, itemEl) {
+// Strip the family prefix from the displayed name when the entry is
+// shown inside its family group — "Choc v2 Autumn" becomes "Autumn",
+// less noise at a glance.
+function _stripFamilyPrefix(name, family) {
+  if (!name || !family) return name || "";
+  const lower = name.toLowerCase();
+  const fLower = family.toLowerCase();
+  if (lower.startsWith(fLower + " ")) return name.slice(family.length + 1);
+  if (lower.startsWith(fLower)) return name.slice(family.length).trim();
+  return name;
+}
+
+async function openLibraryDialog() {
+  const list = $("library-list");
+  list.innerHTML = '<div class="dim">loading…</div>';
+  $("library-dialog").showModal();
+  let switches = null;
+  try {
+    const r = await fetch("/library/index.json", { cache: "no-store" });
+    if (r.ok) switches = await r.json();
+  } catch (_) { /* network or 404 — show empty */ }
+  if (!Array.isArray(switches) || switches.length === 0) {
+    list.innerHTML = '<div class="dim">no library switches available yet.</div>';
+    return;
+  }
+  state.libraryCatalog = switches;
+  state.librarySelected = new Set();
+  state.libraryFilter = { type: "all", q: "" };
+  $("library-search").value = "";
+  for (const c of $("library-chips").querySelectorAll(".library-chip")) {
+    c.classList.toggle("active", c.dataset.type === "all");
+  }
+  _renderLibraryList();
+}
+
+function _renderLibraryList() {
+  const list = $("library-list");
+  if (!list) return;
+  const switches = state.libraryCatalog || [];
+  const haveIds = new Set(state.switches.map((s) => s.name));
+  const selected = state.librarySelected;
+  const { type, q } = state.libraryFilter || { type: "all", q: "" };
+  const qLower = q.trim().toLowerCase();
+
+  const byFamily = new Map();
+  for (const s of switches) {
+    if (type !== "all" && _switchType(s) !== type) continue;
+    if (qLower && !((s.name || "").toLowerCase().includes(qLower)
+                 || (s.description || "").toLowerCase().includes(qLower))) continue;
+    const fam = s.family || "Other";
+    if (!byFamily.has(fam)) byFamily.set(fam, []);
+    byFamily.get(fam).push(s);
+  }
+
+  list.innerHTML = "";
+  if (!byFamily.size) {
+    list.innerHTML = '<div class="dim">no switches match the filter.</div>';
+    _updateLibraryCount();
+    return;
+  }
+  for (const [family, items] of byFamily) {
+    const famEl = document.createElement("div");
+    famEl.className = "library-family";
+    famEl.innerHTML = `<div class="library-family-head">${family}</div>`;
+    const grid = document.createElement("div");
+    grid.className = "library-grid";
+    for (const p of items) {
+      const owned = haveIds.has(p.id);
+      const isSelected = selected.has(p.id);
+      const tile = document.createElement("button");
+      tile.type = "button";
+      tile.className = "library-tile"
+        + (owned ? " owned" : "")
+        + (isSelected ? " selected" : "");
+      tile.style.setProperty("--c", p.color || "#f5a623");
+      tile.dataset.id = p.id;
+      tile.disabled = owned;
+      const shortName = _stripFamilyPrefix(p.name || p.id, family);
+      const desc = (p.description || "").trim();
+      // Pull off a short weight/type chip if the description is "X · Y gf"
+      const parts = desc.split("·").map((s) => s.trim()).filter(Boolean);
+      const typeBadge = parts[0] || _switchType(p);
+      const weightBadge = parts[1] || "";
+      tile.innerHTML = `
+        <div class="library-tile-head">
+          <span class="library-tile-dot"></span>
+          <span class="library-tile-name"></span>
+          <span class="library-tile-check">✓</span>
+        </div>
+        <div class="library-tile-meta">
+          <span class="library-tile-type"></span>
+          ${weightBadge ? `<span class="library-tile-weight"></span>` : ""}
+        </div>
+        ${owned ? `<div class="library-tile-status">in your set</div>` : ""}
+      `;
+      tile.querySelector(".library-tile-name").textContent = shortName;
+      tile.querySelector(".library-tile-type").textContent = typeBadge;
+      if (weightBadge) tile.querySelector(".library-tile-weight").textContent = weightBadge;
+      if (!owned) {
+        tile.addEventListener("click", () => {
+          if (selected.has(p.id)) selected.delete(p.id);
+          else selected.add(p.id);
+          tile.classList.toggle("selected");
+          _updateLibraryCount();
+        });
+      }
+      grid.appendChild(tile);
+    }
+    famEl.appendChild(grid);
+    list.appendChild(famEl);
+  }
+  _updateLibraryCount();
+}
+
+function _updateLibraryCount() {
+  const n = state.librarySelected ? state.librarySelected.size : 0;
+  const el = $("library-count");
+  if (el) el.textContent = `${n} selected`;
+  const ok = $("library-ok");
+  if (ok) ok.disabled = n === 0;
+}
+
+async function importSelectedFromLibrary() {
+  const okBtn = $("library-ok");
+  const catalog = state.libraryCatalog || [];
+  const selected = state.librarySelected || new Set();
   if (!state.storageHandle) {
-    $("presets-dialog").close();
+    $("library-dialog").close();
     showStorageGate(state.storageName);
     return;
   }
-  if (!Array.isArray(preset.files) || preset.files.length === 0) {
-    setStatus("preset has no files");
-    return;
+  const have = new Set(state.switches.map((s) => s.name));
+  const wanted = [];
+  for (const id of selected) {
+    if (have.has(id)) continue;
+    const p = catalog.find((x) => x.id === id);
+    if (p) wanted.push(p);
   }
-  itemEl.classList.add("importing");
-  const btn = itemEl.querySelector("button");
-  btn.disabled = true;
-  const swName = preset.id;
-  let done = 0;
-  try {
-    const dir = await state.storageHandle.getDirectoryHandle(swName, { create: true });
-    for (const file of preset.files) {
-      const r = await fetch(`/presets/${encodeURIComponent(swName)}/${encodeURIComponent(file)}`);
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      const ab = await r.arrayBuffer();
-      const fh = await dir.getFileHandle(file, { create: true });
-      const w = await fh.createWritable();
-      await w.write(ab);
-      await w.close();
-      done++;
-      btn.textContent = `${done}/${preset.files.length}`;
+  if (!wanted.length) { $("library-dialog").close(); return; }
+
+  okBtn.disabled = true;
+  let firstImported = null;
+  let totalFiles = 0, doneFiles = 0;
+  for (const p of wanted) totalFiles += (p.files || []).length;
+
+  for (const preset of wanted) {
+    try {
+      const dir = await state.storageHandle.getDirectoryHandle(preset.id, { create: true });
+      for (const file of (preset.files || [])) {
+        const r = await fetch(`/library/${encodeURIComponent(preset.id)}/${encodeURIComponent(file)}`);
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const ab = await r.arrayBuffer();
+        const fh = await dir.getFileHandle(file, { create: true });
+        const w = await fh.createWritable();
+        await w.write(ab);
+        await w.close();
+        doneFiles++;
+        okBtn.textContent = `importing · ${doneFiles}/${totalFiles}`;
+      }
+      if (preset.color) setSwitchColor(preset.id, preset.color);
+      setSwitchMeta(preset.id, {
+        name: preset.name || preset.id,
+        family: preset.family || "",
+        description: preset.description || "",
+      });
+      if (!firstImported) firstImported = preset.id;
+    } catch (e) {
+      console.error("import failed for", preset.id, e);
+      setStatus(`failed to import ${preset.id}: ${e.message}`);
     }
-    if (preset.color) setSwitchColor(swName, preset.color);
-    $("presets-dialog").close();
-    setStatus(`imported ${preset.name || swName} · ${done} samples`);
-    await refreshSwitches();
-    await selectSwitch(swName);
-  } catch (e) {
-    console.error("import failed", e);
-    btn.textContent = "retry";
-    btn.disabled = false;
-    setStatus("import failed: " + e.message);
-  } finally {
-    itemEl.classList.remove("importing");
   }
+
+  okBtn.disabled = false;
+  okBtn.textContent = "import selected";
+  $("library-dialog").close();
+  setStatus(`imported ${wanted.length} switch${wanted.length === 1 ? "" : "es"} · ${doneFiles} samples`);
+  await refreshSwitches();
+  if (firstImported) await selectSwitch(firstImported);
 }
 
 async function removeCurrentSwitch() {
   const sw = state.currentSwitch;
   if (!sw) return;
-  if (!confirm(`remove switch '${sw}' and all of its samples? this cannot be undone.`)) return;
+  if (!confirm(`remove switch '${displayName(sw)}' and all of its samples? this cannot be undone.`)) return;
   try { await fsDeleteSwitch(sw); }
   catch (e) { alert("remove failed: " + e.message); return; }
 
   state.switches = state.switches.filter((s) => s.name !== sw);
   state.switchProfiles.delete(sw);
   state.switchColors.delete(sw);
+  state.switchMeta.delete(sw);
   try { localStorage.setItem("thock.colors", JSON.stringify([...state.switchColors])); }
+  catch (_) { /* ignore */ }
+  try { localStorage.setItem("thock.switchMeta", JSON.stringify([...state.switchMeta])); }
   catch (_) { /* ignore */ }
 
   const prefix = `${sw}::`;
@@ -3187,11 +3631,12 @@ async function removeCurrentSwitch() {
   } else {
     $("fp-name").textContent = "—";
     $("fp-meta").textContent = "";
+    renderFingerprintTags(null);
     state.switchSamples = [];
     renderTiles();
     drawFingerprint(null);
   }
-  setStatus(`removed · ${sw}`);
+  setStatus(`removed · ${displayName(sw)}`);
 }
 
 async function deleteAllInSwitch() {
@@ -3230,47 +3675,59 @@ function wire() {
       catch (e) { console.error(e); setStatus("mic error: " + e.message); }
       return;
     }
-    if (mode === "calibrate") {
-      if (!state.currentSwitch) { alert("create or select a switch first"); return; }
-      startGuided().catch((e) => { console.error(e); setStatus("calibrate failed: " + e.message); });
+    if (mode === "new-switch") {
+      openNewSwitchDialog();
       return;
     }
-    if (mode === "armed") {
-      disarm();
-      return;
-    }
-    arm().catch((e) => { console.error(e); setStatus("arm error: " + e.message); });
+    // mode === "record" — kick off the metronome recording session.
+    startGuided().catch((e) => { console.error(e); setStatus("record failed: " + e.message); });
   });
 
-  $("new-switch").addEventListener("click", () => {
-    const d = $("new-switch-dialog");
-    $("new-switch-name").value = "";
-    d.showModal();
-    setTimeout(() => $("new-switch-name").focus(), 0);
+  $("new-switch").addEventListener("click", openNewSwitchDialog);
+  // Enter inside any input → submit; Esc → cancel
+  for (const id of ["new-switch-id", "new-switch-name", "new-switch-family", "new-switch-desc"]) {
+    $(id).addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); $("new-switch-dialog").close("ok"); }
+      else if (e.key === "Escape") { e.preventDefault(); $("new-switch-dialog").close("cancel"); }
+    });
+  }
+  // Auto-derive id from name as the user types — so they typically
+  // never have to touch the id field. Stops auto-syncing the moment
+  // the user manually edits the id (so it doesn't surprise them).
+  $("new-switch-name").addEventListener("input", () => {
+    const idEl = $("new-switch-id");
+    if (idEl.dataset.touched === "1") return;
+    idEl.value = _slugifyId($("new-switch-name").value);
   });
-  $("new-switch-name").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); $("new-switch-dialog").close("ok"); }
-    else if (e.key === "Escape") { e.preventDefault(); $("new-switch-dialog").close("cancel"); }
+  $("new-switch-id").addEventListener("input", () => {
+    $("new-switch-id").dataset.touched = "1";
   });
+
   $("new-switch-cancel").addEventListener("click", () => $("new-switch-dialog").close("cancel"));
   $("new-switch-dialog").addEventListener("close", async () => {
     try {
       const d = $("new-switch-dialog");
       if (d.returnValue !== "ok") return;
+      const idRaw = $("new-switch-id").value.trim();
       const name = $("new-switch-name").value.trim();
-      if (!name) return;
-      if (!/^[A-Za-z0-9._-]+$/.test(name)) {
-        alert("invalid name — use letters, digits, dot, dash, underscore");
+      const family = $("new-switch-family").value.trim();
+      const desc = $("new-switch-desc").value.trim();
+      const id = idRaw || _slugifyId(name);
+      if (!id) { alert("need an id (or a name to derive one from)"); return; }
+      if (!/^[A-Za-z0-9._-]+$/.test(id)) {
+        alert("invalid id — use letters, digits, dot, dash, underscore");
         return;
       }
-      if (!state.switches.find((s) => s.name === name)) {
-        state.switches.push({ name, samples: [], count: 0 });
+      if (!state.switches.find((s) => s.name === id)) {
+        state.switches.push({ name: id, samples: [], count: 0 });
         state.switches.sort((a, b) => a.name.localeCompare(b.name));
       }
-      state.currentSwitch = name;
-      renderSwitchRow();
-      updateTypingButtons();
-      await loadSwitchSamples(name);
+      // Persist whatever display metadata the user filled in. Empty
+      // fields are fine — displayName falls back to the id.
+      if (name || family || desc) {
+        setSwitchMeta(id, { name: name || id, family, description: desc });
+      }
+      await selectSwitch(id);
     } catch (e) {
       console.error("new-switch failed", e);
       setStatus("new-switch failed: " + e.message);
@@ -3279,19 +3736,43 @@ function wire() {
 
   $("order").addEventListener("change", () => renderTiles());
   $("delete-all-btn").addEventListener("click", () => deleteAllInSwitch());
+  $("play-all-btn").addEventListener("click", () => {
+    togglePlayAll().catch((e) => { console.error(e); setStatus("play-all failed: " + e.message); });
+  });
   $("detail-play").addEventListener("click", () => state.activeSample && playSampleNow(state.activeSample));
   $("detail-delete").addEventListener("click", () => deleteActive());
 
-  $("type-start").addEventListener("click", () => {
-    startTyping().catch((e) => { console.error(e); setStatus("typing error: " + e.message); });
+  $("type-toggle").addEventListener("click", () => {
+    if (state.typingActive) {
+      stopTyping();
+    } else {
+      startTyping().catch((e) => { console.error(e); setStatus("typing error: " + e.message); });
+    }
   });
-  $("type-stop").addEventListener("click", stopTyping);
 
 
   $("remove-switch-btn").addEventListener("click", () => removeCurrentSwitch());
 
-  $("presets-btn").addEventListener("click", () => openPresetsDialog());
-  $("presets-close").addEventListener("click", () => $("presets-dialog").close());
+  $("library-btn").addEventListener("click", () => openLibraryDialog());
+  $("library-close").addEventListener("click", () => $("library-dialog").close());
+  $("library-ok").addEventListener("click", () => {
+    importSelectedFromLibrary().catch((e) => { console.error(e); setStatus("import failed: " + e.message); });
+  });
+  $("library-search").addEventListener("input", (e) => {
+    if (!state.libraryFilter) state.libraryFilter = { type: "all", q: "" };
+    state.libraryFilter.q = e.target.value;
+    _renderLibraryList();
+  });
+  $("library-chips").addEventListener("click", (e) => {
+    const chip = e.target.closest(".library-chip");
+    if (!chip) return;
+    for (const c of $("library-chips").querySelectorAll(".library-chip")) {
+      c.classList.toggle("active", c === chip);
+    }
+    if (!state.libraryFilter) state.libraryFilter = { type: "all", q: "" };
+    state.libraryFilter.type = chip.dataset.type;
+    _renderLibraryList();
+  });
 
   // fft settings — power-user controls; absent from the default DOM, but
   // settable via console (`state.fft.window = 'hann'; refreshFftViews()`)
@@ -3310,6 +3791,10 @@ function wire() {
   const setupAfter = async () => {
     await refreshSwitches();
     if (state.currentSwitch) await loadSwitchSamples(state.currentSwitch);
+    // First-run nudge: if storage is set up but the user has no
+    // switches yet, surface the curated library so they have
+    // something to listen to immediately.
+    if (!state.switches.length) maybeAutoOpenLibrary();
   };
 
   $("guided-btn").addEventListener("click", () => {
@@ -3319,7 +3804,12 @@ function wire() {
     });
   });
   $("guided-cancel").addEventListener("click", cancelGuided);
-  $("guided-skip").addEventListener("click", skipGuidedPhase);
+  $("guided-retry").addEventListener("click", () => {
+    _retryGuidedSession().catch((e) => { console.error(e); setStatus("retry failed: " + e.message); });
+  });
+  $("guided-accept").addEventListener("click", () => {
+    _commitGuidedSession().catch((e) => { console.error(e); setStatus("save failed: " + e.message); });
+  });
 
   $("storage-btn").addEventListener("click", () => showStorageGate(state.storageName));
   $("storage-pick").addEventListener("click", () => {
@@ -3365,6 +3855,7 @@ async function init() {
   loadSwitchColors();
   loadSwitchDwells();
   loadSwitchTemplates();
+  loadSwitchMeta();
   loadFftSettings();
   wire();
   refreshPrimary();
@@ -3373,6 +3864,8 @@ async function init() {
   renderScope();
   drawTypingViz();
   drawTypingText();
+  updateTypistSource();
+  loadArticles().catch(() => {});
 
   if (!fsSupported()) {
     showStorageGate(null);
@@ -3400,10 +3893,71 @@ async function init() {
   }
 
   await refreshSwitches();
+  // Backfill display names for any owned switch that matches a library
+  // entry — handles imports done before this persistence existed.
+  syncMetaFromLibrary().catch(() => {});
   if (state.currentSwitch) {
     state.typingSwitch = state.currentSwitch;
     await loadSwitchSamples(state.currentSwitch);
+  } else if (state.storageHandle && !state.switches.length) {
+    // Storage was resumed from a prior session but the user emptied
+    // it (or never recorded). Show library — same first-run nudge.
+    maybeAutoOpenLibrary();
   }
+}
+
+// For switches imported before display-name persistence existed (or
+// imported on another device that sync'd just the WAVs), fetch the
+// library index and backfill state.switchMeta for any owned switch
+// that matches a library entry. Idempotent — re-runs harmlessly.
+async function syncMetaFromLibrary() {
+  try {
+    const r = await fetch("/library/index.json", { cache: "no-store" });
+    if (!r.ok) return;
+    const list = await r.json();
+    if (!Array.isArray(list)) return;
+    const owned = new Set(state.switches.map((s) => s.name));
+    let changed = false;
+    for (const p of list) {
+      if (!owned.has(p.id)) continue;
+      const current = state.switchMeta.get(p.id);
+      const fresh = {
+        name: p.name || p.id,
+        family: p.family || "",
+        description: p.description || "",
+      };
+      if (!current
+          || current.name !== fresh.name
+          || current.family !== fresh.family
+          || current.description !== fresh.description) {
+        state.switchMeta.set(p.id, fresh);
+        changed = true;
+      }
+    }
+    if (changed) {
+      try { localStorage.setItem("thock.switchMeta", JSON.stringify([...state.switchMeta])); }
+      catch (_) { /* ignore */ }
+      renderSwitchRow();
+      updateTypingButtons();
+      if (state.currentSwitch) {
+        $("fp-name").textContent = displayName(state.currentSwitch);
+        renderFingerprintTags(state.currentSwitch);
+        if ($("meta-switch")) $("meta-switch").textContent = displayName(state.currentSwitch);
+      }
+    }
+  } catch (_) { /* network or 404 — skip */ }
+}
+
+// Open the library dialog only when the index has entries — otherwise
+// we'd flash an empty modal. Used as a soft first-run nudge so a new
+// user immediately sees the curated switches instead of an empty grid.
+async function maybeAutoOpenLibrary() {
+  try {
+    const r = await fetch("/library/index.json", { cache: "no-store" });
+    if (!r.ok) return;
+    const list = await r.json();
+    if (Array.isArray(list) && list.length > 0) openLibraryDialog();
+  } catch (_) { /* network/404 — skip */ }
 }
 
 init().catch((e) => {

@@ -28,7 +28,7 @@ Live: **https://thock.mwlabs.be**
   English words / quotes / pangrams / random). Common digraphs roll
   faster, awkward ones stretch, occasional micro-pauses. Letters appear
   on a synced canvas above the keystroke waveforms.
-- **presets** — curated switch datasets hosted alongside the site;
+- **library** — curated switch datasets hosted alongside the site;
   one-click import into your storage.
 - **per-switch color** — small palette assigned via name hash or picked
   manually; persisted in `localStorage`.
@@ -60,16 +60,16 @@ storage* on Firefox/Safari) to pick where samples are written.
 Mic capture goes through AudioWorklet so capture latency stays well below
 visible.
 
-## Adding presets
+## Adding library
 
 After recording your dataset locally, bundle it:
 
 ```sh
-python scripts/bundle_presets.py /path/to/your/samples --clear
+python scripts/bundle_library.py /path/to/your/samples --clear
 ```
 
-This copies each `<switch>/*.wav` into `presets/<switch>/` and
-regenerates `presets/index.json`. Drop a `meta.json` next to a switch's
+This copies each `<switch>/*.wav` into `library/<switch>/` and
+regenerates `library/index.json`. Drop a `meta.json` next to a switch's
 samples for custom name / description / color:
 
 ```json
@@ -80,7 +80,7 @@ samples for custom name / description / color:
 }
 ```
 
-Commit the `presets/` tree, push, and the site picks them up.
+Commit the `library/` tree, push, and the site picks them up.
 
 ## Deploying to Vercel
 

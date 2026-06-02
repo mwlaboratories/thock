@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """Bundle a directory of <switch>/<sample>.wav recordings into the
-presets/ layout that the static site serves.
+library/ layout that the static site serves.
 
 Usage:
-    python scripts/bundle_presets.py /path/to/your/samples [--meta meta.yaml]
+    python scripts/bundle_library.py /path/to/your/samples [--clear]
 
-Each direct subdirectory of the source becomes a preset. WAVs are copied
-into presets/<switch_name>/, and presets/index.json is regenerated.
+Each direct subdirectory of the source becomes a library entry. WAVs
+are copied into library/<switch_name>/, and library/index.json is
+regenerated.
 
-Optional per-switch metadata:
-    Drop a meta.json next to each switch's samples to override
-    name/description/color, e.g.:
+Optional per-switch metadata (drop a meta.json next to its samples to
+override the auto-derived name / color / family):
 
-        {
-          "name": "Choc v2 Red",
-          "description": "Kailh Choc v2 Red — 50 gf linear",
-          "color": "#ff6b6b"
-        }
+    {
+      "name": "Choc v2 Red",
+      "family": "Kailh Choc v2",
+      "description": "Linear · 50 ± 10 gf",
+      "color": "#e25555"
+    }
 """
 from __future__ import annotations
 
@@ -27,11 +28,15 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-DEFAULT_DST = REPO / "presets"
+DEFAULT_DST = REPO / "library"
 
+# Theme-safe palette (mirrors app.js COLOR_PALETTE — every entry is
+# readable on both the light and dark surfaces).
 DEFAULT_COLORS = [
-    "#f5a623", "#ff6b6b", "#5ba8ff", "#7dd87d",
-    "#b18cff", "#2dd4bf", "#ec4899", "#d4e642",
+    "#f5a623", "#e67e22", "#e25555", "#c0392b",
+    "#d63384", "#a040b3", "#9472d8", "#5b6acb",
+    "#3d8be8", "#2da8c0", "#0f9c8e", "#2e9d6c",
+    "#3f9550", "#7a8a30", "#b78d2a", "#a05a2c",
 ]
 
 
@@ -42,7 +47,7 @@ def humanize(slug: str) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("source", help="folder of <switch>/<wavs>")
-    ap.add_argument("--dst", default=str(DEFAULT_DST), help="output presets dir")
+    ap.add_argument("--dst", default=str(DEFAULT_DST), help="output library dir")
     ap.add_argument("--clear", action="store_true", help="wipe destination first")
     args = ap.parse_args()
 
@@ -76,16 +81,18 @@ def main() -> int:
         entry = {
             "id":          switch_dir.name,
             "name":        meta.get("name", humanize(switch_dir.name)),
+            "family":      meta.get("family", ""),
             "description": meta.get("description", ""),
             "color":       meta.get("color", DEFAULT_COLORS[color_idx % len(DEFAULT_COLORS)]),
             "files":       wavs,
         }
         index.append(entry)
         color_idx += 1
-        print(f"  {entry['id']}: {len(wavs)} samples")
+        fam = f" [{entry['family']}]" if entry["family"] else ""
+        print(f"  {entry['id']}{fam}: {len(wavs)} samples")
 
     (dst / "index.json").write_text(json.dumps(index, indent=2) + "\n")
-    print(f"\nbundled {len(index)} presets → {dst}")
+    print(f"\nbundled {len(index)} switches → {dst}")
     print(f"index   → {dst / 'index.json'}")
     return 0
 

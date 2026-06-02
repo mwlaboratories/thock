@@ -58,27 +58,31 @@
 <div id="guided-modal" class="guided-modal hidden" role="dialog" aria-modal="true" aria-labelledby="guided-title">
   <div class="guided-card">
     <div class="guided-card-head">
-      <h3 id="guided-title">calibrate · <span id="guided-card-switch">—</span></h3>
-      <span class="guided-phase-num" id="guided-phase-num">phase 1 of 4</span>
+      <h3 id="guided-title">record · <span id="guided-card-switch">—</span></h3>
+      <span class="guided-phase-num" id="guided-phase-num">ready</span>
     </div>
 
     <div class="guided-stage" id="guided-stage" data-step="ready">
-      <div class="guided-stage-icon" id="guided-stage-icon">⋯</div>
-      <div class="guided-stage-label" id="guided-stage-label">get ready</div>
-      <div class="guided-stage-sub" id="guided-stage-sub"></div>
+      <div class="metro" id="metro">
+        <svg class="metro-svg" viewBox="0 0 120 120">
+          <circle class="metro-track" cx="60" cy="60" r="54" />
+          <circle class="metro-progress" id="metro-progress" cx="60" cy="60" r="54" />
+        </svg>
+        <div class="metro-dot" id="metro-dot">
+          <span class="metro-dot-label" id="metro-dot-label">ready</span>
+        </div>
+      </div>
     </div>
 
-    <div class="guided-card-counter" id="guided-counter">○○○○○</div>
-    <div class="guided-card-status" id="guided-status">0 of 5</div>
+    <div class="guided-card-status" id="guided-status">0 / 100</div>
 
-    <div class="guided-card-phase">
-      <div class="guided-card-label" id="guided-label">isolated DOWN</div>
-      <div class="guided-card-hint" id="guided-hint">press the key and HOLD a beat, then release.</div>
-    </div>
+    <div class="guided-card-hint" id="guided-hint">follow the metronome — the tempo slowly speeds up over ~40 seconds. tap on the beat. we'll keep the cleanest 30 samples across the speed range.</div>
 
-    <div class="guided-card-learned hidden" id="guided-learned"></div>
+    <div class="guided-summary hidden" id="guided-summary"></div>
+
     <div class="guided-card-controls">
-      <button id="guided-skip" class="action ghost">skip phase</button>
+      <button id="guided-retry" class="action ghost hidden">▶ try again</button>
+      <button id="guided-accept" class="action primary hidden">keep these</button>
       <button id="guided-cancel" class="action ghost danger">cancel</button>
     </div>
   </div>
@@ -101,7 +105,7 @@
 
     <div class="capture-actions">
       <button id="primary" class="action primary">enable mic</button>
-      <button id="guided-btn" class="action ghost">guided session</button>
+      <button id="guided-btn" class="action ghost hidden">re-record</button>
     </div>
 
     <p class="hint">a switch starts as a stranger. <strong>calibrate</strong> first — the guided session teaches the system what one press of this switch sounds like (DOWN, UP, dwell). Then <strong>▶ start</strong> records freeform presses against that template.</p>
@@ -117,7 +121,7 @@
     <div class="pane-head">
       <h2>switch</h2>
       <div class="pane-head-actions">
-        <button id="presets-btn" class="action ghost small">presets</button>
+        <button id="library-btn" class="action ghost small">library</button>
         <button id="new-switch" class="action ghost small">+ new</button>
       </div>
     </div>
@@ -130,6 +134,7 @@
       <div class="fingerprint-head">
         <span class="fp-label">fingerprint</span>
         <span class="fp-name" id="fp-name">—</span>
+        <span class="fp-tags" id="fp-tags"></span>
         <span class="fp-meta" id="fp-meta"></span>
       </div>
       <canvas id="fingerprint" width="1200" height="220"></canvas>
@@ -138,10 +143,11 @@
     <div class="samples-head">
       <span>samples</span>
       <div class="samples-actions">
+        <button id="play-all-btn" class="action ghost small">▶ play all</button>
         <select id="order" class="mini-select">
           <option value="recorded">recorded</option>
-          <option value="amplitude-desc">loud → soft</option>
-          <option value="amplitude-asc">soft → loud</option>
+          <option value="duration-asc">short → long</option>
+          <option value="duration-desc">long → short</option>
           <option value="random">random</option>
         </select>
         <button id="delete-all-btn" class="action ghost small">clear samples</button>
@@ -188,18 +194,9 @@
     </div>
 
     <div class="typist-controls">
-      <button id="type-start" class="action primary">▶ start</button>
-      <button id="type-stop" class="action ghost">■ stop</button>
+      <button id="type-toggle" class="action primary">▶ start</button>
       <label class="param">wpm <input type="number" id="wpm" value="100" min="20" max="240" /></label>
-      <label class="param">mode
-        <select id="typist-mode" class="mini-select">
-          <option value="passages">passages</option>
-          <option value="words">words</option>
-          <option value="quotes">quotes</option>
-          <option value="pangrams">pangrams</option>
-          <option value="random">random</option>
-        </select>
-      </label>
+      <span class="typist-source" id="typist-source">source: classic passages</span>
       <p class="hint">click a switch to instantly swap which one the typist plays from.</p>
     </div>
 
@@ -214,21 +211,51 @@
 
 </main>
 
-<dialog id="presets-dialog">
-  <h3>switch presets</h3>
-  <p class="dialog-hint">curated keyswitch sound libraries. importing copies the samples into your storage folder as a new switch.</p>
-  <div id="presets-list" class="presets-list"></div>
-  <p class="dialog-hint">want to contribute your switch? export it via the <em>share</em> button on any switch, then open an issue at the repo with the zip.</p>
+<dialog id="library-dialog">
+  <h3>switch library</h3>
+  <p class="dialog-hint">click switches to select. <strong>your local recordings are never removed</strong> — unselecting just skips importing.</p>
+  <div class="library-controls">
+    <input type="search" id="library-search" placeholder="search…" autocomplete="off" />
+    <div class="library-chips" id="library-chips">
+      <button class="library-chip active" data-type="all">all</button>
+      <button class="library-chip" data-type="clicky">clicky</button>
+      <button class="library-chip" data-type="tactile">tactile</button>
+      <button class="library-chip" data-type="linear">linear</button>
+      <button class="library-chip" data-type="silent">silent</button>
+    </div>
+  </div>
+  <div id="library-list" class="library-list"></div>
+  <p class="dialog-hint">want to contribute your switch? record one with the in-app metronome, then open an issue at the repo with the WAVs.</p>
   <div class="row dialog-actions">
-    <button id="presets-close" class="action ghost">close</button>
+    <span id="library-count" class="library-selected-count">0 selected</span>
+    <button id="library-ok" class="action primary">import selected</button>
+    <button id="library-close" class="action ghost">close</button>
   </div>
 </dialog>
 
 <dialog id="new-switch-dialog">
   <form method="dialog">
-    <h3>name a new switch</h3>
-    <input id="new-switch-name" autofocus placeholder="cherry_mx_red" />
-    <p class="dialog-hint">letters, digits, dot, dash, underscore.</p>
+    <h3>new switch</h3>
+    <label class="ns-field">
+      <span class="ns-label">id</span>
+      <input id="new-switch-id" autofocus placeholder="cherry_mx_red" />
+      <span class="ns-hint">folder/filename slug · letters, digits, dot, dash, underscore</span>
+    </label>
+    <label class="ns-field">
+      <span class="ns-label">name</span>
+      <input id="new-switch-name" placeholder="Cherry MX Red" />
+      <span class="ns-hint">shown in the switch chip + fingerprint</span>
+    </label>
+    <label class="ns-field">
+      <span class="ns-label">family</span>
+      <input id="new-switch-family" placeholder="Cherry MX" />
+      <span class="ns-hint">grouping for the library · optional</span>
+    </label>
+    <label class="ns-field">
+      <span class="ns-label">description</span>
+      <input id="new-switch-desc" placeholder="Linear · 45 ± 10 gf" />
+      <span class="ns-hint">type and weight · optional</span>
+    </label>
     <div class="row dialog-actions">
       <button id="new-switch-ok" value="ok" class="action primary">create</button>
       <button type="button" id="new-switch-cancel" class="action ghost">cancel</button>

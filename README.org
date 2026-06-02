@@ -123,6 +123,96 @@ Thock's capture pipeline is built to that idea:
   rumble can't inflate the threshold; the threshold tracks the noise
   /in the band where keyswitch transients live/.
 
+* The decomposition direction (in progress)
+
+The recording philosophy above ends at "a press of switch X is a
+/concept/ in Rand's sense." The decomposition direction is what that
+concept enables.
+
+** The CCD and the 20 cuts
+
+A concept is formed by /measurement omission/ (Rand, /ITOE/): hold
+several units of the class in mind, identify the dimensions along
+which they resemble each other (the conceptual common denominator),
+and omit the dimensions along which they vary. For "a press of switch
+X", the CCD is the acoustic signature all units share — spectral
+envelope, attack-decay structure, characteristic resonances. The
+omitted dimensions are velocity, mic-distance jitter, exact onset
+time, ambient noise.
+
+*Averaging spectra across N clean units literally computes the CCD.*
+The fingerprint thock already shows is the CCD made operational. Mill
+(1843) named the underlying inference: the /Method of Agreement/ — if
+all units of a class share a feature, that feature is essential to the
+class.
+
+This gives us our minimum-viable-dataset answer: not "as many presses
+as we can collect," but /enough clean units to converge the CCD/. In
+practice, ~20 well-cut presses per switch, captured on a slow
+metronome so cuts are unambiguous. More adds robustness; fewer makes
+the CCD noisy.
+
+The user must /introduce variation/ across those 20 — vary pressure
+(soft / firm / hard), partial vs full travel, finger angle. The CCD is
+what stays invariant under that variation. Without variation you've
+captured one specific manner of pressing, not the switch — Rand's
+measurement omission only works if there are measurements to omit.
+
+** Layered recording and Mill's Method of Difference
+
+A keyboard's sound is a chain of resonators stacked on a source:
+
+#+BEGIN_SRC
+recorded(f) ≈ switch_source(f) × keycap_transfer(f) × housing_transfer(f)
+#+END_SRC
+
+Mill's /Method of Difference/ (1843): if two cases share every
+relevant condition except one, the residue in the outcome is caused by
+that one. Applied here:
+
+- /bare switch/ — 20 cuts, no keycap, no housing. The source CCD.
+- /+ keycap/ — 20 cuts, same switch, same mic position, one specific
+  cap fitted. Subtract bare CCD → the cap's transfer function.
+- /+ housing/ — 20 cuts, same switch + cap mounted in a known
+  case/plate. Subtract previous → the assembly's reverberant
+  signature.
+
+Same mic position across all three is mandatory or the subtraction
+picks up room geometry too. Pianoteq does this for pianos
+(hammer × string × soundboard); the algebra works for keyboards.
+
+Once each layer's signature is known, /any/ (switch, cap, housing)
+tuple can be synthesized — including combinations no one has ever
+physically built. That is the long-term destination.
+
+** Detection becomes concept-identification
+
+The current capture pipeline uses generic energy-threshold heuristics
+(noise-floor EMA, crest factor) to decide what is and isn't a
+keypress. That's fragile across switch types — silent switches sit
+near the floor, clicky switches double-trigger on the click +
+bottom-out.
+
+With a per-switch CCD in hand, detection becomes a different kind of
+question: not "is this an above-threshold transient?" but /"does this
+candidate event fit the CCD of switch X?"/ That's template-matching /
+matched-filter detection. Per-switch templates make the detector as
+discriminating as the switch's identity is sharp — exactly the
+Rand/Mill argument applied operationally.
+
+** Corpus layout
+
+#+BEGIN_SRC
+samples/raw/<switch>/<session>.wav     # one session = 20 presses on a metronome
+samples/raw/<switch>/<session>.labels.txt   # Audacity label-track export
+samples/raw/manifest.csv               # (session, switch, keycap, housing, mic, notes)
+#+END_SRC
+
+For the bootstrap, Audacity label-tracks marking each press are enough
+ground truth to validate any template-matched detector against. Once
+the CCD machinery is in place, the labels become redundant — the
+template itself is what's tested.
+
 * Running locally
 
 Requires [[https://devenv.sh][devenv]]:
@@ -141,16 +231,16 @@ Click /choose folder/ to pick where samples go. Firefox/Safari fall back
 to OPFS (browser-managed filesystem, functionally identical, just not
 visible to other tools).
 
-* Adding presets
+* Adding library entries
 
 After recording your dataset:
 
 #+BEGIN_SRC sh
-python scripts/bundle_presets.py /path/to/your/samples --clear
+python scripts/bundle_library.py /path/to/your/samples --clear
 #+END_SRC
 
-Copies each =<switch>/*.wav= into =presets/<switch>/= and regenerates
-=presets/index.json=. Optional =meta.json= per switch:
+Copies each =<switch>/*.wav= into =library/<switch>/= and regenerates
+=library/index.json=. Optional =meta.json= per switch:
 
 #+BEGIN_SRC json
 {
