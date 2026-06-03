@@ -700,8 +700,9 @@ async function ensureAudioCtx() {
   return ctx;
 }
 
-// EQ presets — biquad chain values tuned by ear, not by impulse
-// response. Each preset shapes:
+// EQ presets — biquad chain values tuned against documented
+// practice from film sound design + room acoustics literature,
+// not pure guesswork. Each preset shapes:
 //
 //   hp       high-pass cutoff (Hz)           kills close-mic plate rumble
 //   ls       low-shelf gain (dB) / lsFreq    body weight
@@ -709,52 +710,57 @@ async function ensureAudioCtx() {
 //   lp       low-pass cutoff (Hz)            distance / damping
 //   hs       high-shelf gain (dB) / hsFreq   sparkle / harshness
 //
-// The library recordings were captured very close to the keyboard
-// plate, so a fair chunk of the low end on the WAV is artificial
-// proximity / vibrating-plate energy you'd never hear from arm's
-// length. Most presets aggressively HP that out; only 'raw' lets it
-// through, since 'raw' is documenting the source material.
+// Key facts the numbers are tuned against:
+//   - Air attenuation below 500 Hz is small and roughly linear, so
+//     bass survives distance — distance presets should not aggressively
+//     HP. (TVTech / prosoundtraining.com)
+//   - Walls block highs AND lows but pass mids well; "next room"
+//     LP usually lands around 1 kHz. (sound-design guides)
+//   - PE foam mod scrubs HF above ~4 kHz and enhances the low-end
+//     pop. (NPK / Switch and Click)
+//   - Underwater practice: HP 80-100 Hz, LP 500-1000 Hz, +3 to +6 dB
+//     boost below 250 Hz. (musicguymixing, soundcy)
 const ROOM_PRESETS = {
   // True bypass — no EQ, no HP. The recording exactly as captured.
   raw:        { hp: 20,   lp: 22050, hs: 0,   hsFreq: 2500, ls: 0,   lsFreq: 200, peak: 0,  peakFreq: 1000, peakQ: 1 },
 
-  // Boutique custom: aluminium case + gasket + some foam. Heavy case
-  // mass shelves up bass body, gasket absorbs HF aggressively, low-mid
-  // peak around 250 Hz delivers the signature warm thock. Click-band
-  // sizzle gets damped by the gasket/foam combo.
-  gasket:     { hp: 100,  lp: 6500,  hs: -7,  hsFreq: 3000, ls: 6,   lsFreq: 120, peak: 3,  peakFreq: 250,  peakQ: 2 },
+  // Boutique custom: aluminium case + gasket + some foam. Gasket
+  // dampens case resonance ('clean slate'), case mass shelves up
+  // bass, low-mid peak ~250 Hz delivers the signature warm thock.
+  // HF kill is moderate — gasket is dampening, not muffling.
+  gasket:     { hp: 100,  lp: 8000,  hs: -5,  hsFreq: 3500, ls: 6,   lsFreq: 120, peak: 3,  peakFreq: 250,  peakQ: 2 },
 
-  // Premium custom with thick case foam + plate foam: foam absorbs
-  // upper mids and HF aggressively, kills the ring, and the
-  // reverberant cavity goes to zero so what's left is a deep,
-  // dampened thock. LP comes down hard, HF shelf dives, click-band
-  // gets a peaking cut, bass shelves up generously.
-  foam:       { hp: 90,   lp: 4500,  hs: -10, hsFreq: 2500, ls: 7,   lsFreq: 140, peak: -4, peakFreq: 1500, peakQ: 1.5 },
+  // Thick case foam + plate foam: foam absorbs HF above ~4 kHz
+  // aggressively, kills the ring, the reverberant cavity goes to
+  // zero. Click-band gets a peaking cut, deep thock, plenty of body.
+  foam:       { hp: 90,   lp: 4000,  hs: -10, hsFreq: 2500, ls: 7,   lsFreq: 140, peak: -4, peakFreq: 1500, peakQ: 1.5 },
 
   // Stock plastic case, no foam: hollow ring at ~520 Hz, mild bass
-  // loss, brighter top. HP cleans up the worst of the plate rumble.
+  // loss, brighter top. HP cleans up the worst plate rumble.
   hollow:     { hp: 140,  lp: 9500,  hs: 1,   hsFreq: 4000, ls: -2,  lsFreq: 100, peak: 7,  peakFreq: 520,  peakQ: 3 },
 
   // Thin laptop / cheap travel keyboard: scooped bass, sharp click-
   // band peak, no body. Heavy HP, deep low-shelf cut.
   tin_can:    { hp: 320,  lp: 7500,  hs: -2,  hsFreq: 2000, ls: -10, lsFreq: 220, peak: 9,  peakFreq: 1400, peakQ: 5 },
 
-  // Across the desk (~1 m). Plate rumble doesn't propagate at all
-  // through the air — strong HP, gentle HF rolloff.
-  desk:       { hp: 200,  lp: 5500,  hs: -6,  hsFreq: 2500, ls: -1,  lsFreq: 150, peak: 0,  peakFreq: 1000, peakQ: 1 },
+  // Across the desk (~1 m). HP only kills the plate-vibration end of
+  // the spectrum (sub-bass that wouldn't propagate); rest of the
+  // bass band is intact since air doesn't absorb low freq much.
+  desk:       { hp: 150,  lp: 5500,  hs: -6,  hsFreq: 2500, ls: -1,  lsFreq: 150, peak: 0,  peakFreq: 1000, peakQ: 1 },
 
-  // Across the room (~3 m, soft furnishings absorb HF first).
-  far:        { hp: 260,  lp: 2500,  hs: -14, hsFreq: 1800, ls: -3,  lsFreq: 200, peak: 0,  peakFreq: 1000, peakQ: 1 },
+  // Across the room (~3 m, soft furnishings absorb HF first). Still
+  // gentle HP — low end carries.
+  far:        { hp: 180,  lp: 2500,  hs: -14, hsFreq: 1800, ls: -3,  lsFreq: 200, peak: 0,  peakFreq: 1000, peakQ: 1 },
 
-  // Through a closed door — heavy LP, big bass cutoff (walls block low
-  // and high but pass mids).
-  next_room:  { hp: 320,  lp: 900,   hs: -28, hsFreq: 1200, ls: -10, lsFreq: 250, peak: 0,  peakFreq: 1000, peakQ: 1 },
+  // Through a closed door — LP ~1 kHz is the film-sound canon.
+  // Walls block lows somewhat but mids pass; HP moderate.
+  next_room:  { hp: 200,  lp: 1000,  hs: -22, hsFreq: 1200, ls: -6,  lsFreq: 250, peak: 0,  peakFreq: 1000, peakQ: 1 },
 
-  // For fun: underwater. Water transmits bass much better than air
-  // (so big LS lift) but absorbs HF aggressively (drastic LP + HS
-  // cut). A peaking bloom at 350 Hz gives the 'submerged body'
-  // resonance the brain associates with being under.
-  underwater: { hp: 60,   lp: 700,   hs: -24, hsFreq: 1500, ls: 8,   lsFreq: 180, peak: 3,  peakFreq: 350,  peakQ: 1.8 },
+  // For fun: underwater. HP 80 + LP 700 matches the film canon for
+  // 'pronounced submerged' (some guides go as low as 300). +5 dB LS
+  // lift sits in the documented 3-6 dB band. Peaking bloom at 350 Hz
+  // gives the 'submerged body' resonance.
+  underwater: { hp: 80,   lp: 700,   hs: -24, hsFreq: 1500, ls: 5,   lsFreq: 180, peak: 3,  peakFreq: 350,  peakQ: 1.8 },
 };
 
 function applyRoomPreset(name) {
