@@ -136,7 +136,9 @@ html.dark .theme-toggle .theme-icon-moon { display: none; }
   color: var(--line-2);
   margin: 0 1px;
 }
-.parent-mark {
+.parent-mark,
+.parent-mark:visited,
+.parent-mark:active {
   color: var(--ink-dim);
   text-decoration: none;
   transition: color 120ms ease;
