@@ -749,6 +749,12 @@ const ROOM_PRESETS = {
   // Through a closed door — heavy LP, big bass cutoff (walls block low
   // and high but pass mids).
   next_room:  { hp: 320,  lp: 900,   hs: -28, hsFreq: 1200, ls: -10, lsFreq: 250, peak: 0,  peakFreq: 1000, peakQ: 1 },
+
+  // For fun: underwater. Water transmits bass much better than air
+  // (so big LS lift) but absorbs HF aggressively (drastic LP + HS
+  // cut). A peaking bloom at 350 Hz gives the 'submerged body'
+  // resonance the brain associates with being under.
+  underwater: { hp: 60,   lp: 700,   hs: -24, hsFreq: 1500, ls: 8,   lsFreq: 180, peak: 3,  peakFreq: 350,  peakQ: 1.8 },
 };
 
 function applyRoomPreset(name) {
