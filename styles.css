@@ -231,22 +231,6 @@ html.dark .theme-toggle .theme-icon-moon { display: none; }
   text-shadow: 0 0 4px var(--bg);
 }
 
-/* Live room noise floor (high-passed EMA). Sits next to the level
-   meter — drops to ~0.002–0.003 in a genuinely quiet room, rises
-   with HVAC / fan / traffic. Useful as 'is the room actually quiet
-   right now?' before hitting record. */
-.level-floor {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  color: var(--ink-dim);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.level-floor #meta-floor {
-  color: var(--ink);
-}
-
 /* ----------------------------- layout ----------------------------- */
 
 main {
@@ -573,8 +557,17 @@ main {
   color: var(--ink-mute);
   font-size: 0.65rem;
   letter-spacing: 0.1em;
-  text-align: right;
   padding: 4px 2px 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.scope-floor {
+  font-variant-numeric: tabular-nums;
+}
+.scope-floor #meta-floor {
+  color: var(--ink-dim);
 }
 
 canvas {
