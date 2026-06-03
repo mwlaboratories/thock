@@ -157,21 +157,16 @@ html.dark .theme-toggle .theme-icon-moon { display: none; }
 }
 /* The 'thock.' prefix is absolutely positioned to the left of the
    brand-link so 'mwlabs' lands at the exact same X coordinate as
-   the BrandMark on mwlabs.be. Both the prefix and the link are
-   styled as inline-block / leading-none / vertical-align middle —
-   the exact same treatment the BrandMark uses (Tailwind
-   "inline-block leading-none align-middle"). Inline text would
-   render the glyphs ~3-4px lower in the line-box than an inline-
-   block does at the same line-height, causing the mark to shift
-   when navigating between mwlabs.be and thock. */
+   the BrandMark on mwlabs.be. Only the brand-link needs the
+   inline-block + align-middle treatment (it lives in the h1's
+   flow line-box). The prefix is out-of-flow already, so leaving
+   it with inherited line-height keeps the 'thock.' text on the
+   same visual baseline as the link. */
 .brand-prefix {
   position: absolute;
   right: 100%;
   top: 0;
   white-space: nowrap;
-  display: inline-block;
-  line-height: 1;
-  vertical-align: middle;
 }
 .brand-prefix .accent { color: var(--accent); }
 .brand-prefix .dot {
