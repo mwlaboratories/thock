@@ -19,30 +19,69 @@ Live: *https://thock.mwlabs.be*
 
 ** library
 
-A small set of pre-recorded switches you can import with a click. The
-current set is the 16 switches in the Kailh Choc v2 tester pack from
-keebart. Importing copies the files into your browser's local
-storage; you can remove them whenever.
+A curated catalogue of 19 pre-recorded switches you can import in one
+click:
+
+- 16 Kailh Choc v2 — the full set in the Keebart tester pack
+  (standard Reds / Blues / Brown, the Four Seasons series, the Storm
+  series, the Deep Sea Mini silents, Ice Cream, Purple Swallowtail,
+  Saker, Hide Mountain).
+- 3 Kailh Choc v1 — Ambients Twilight and Nocturnal (silent linears),
+  and Sunset (tactile). A cross-family reference for what the v2
+  generation gives up and gains.
+
+Every entry ships with its type, actuation force, and pre-travel /
+total-travel in millimetres, sourced from manufacturer datasheets.
+The colour dot on each tile matches the actual physical stem colour.
+
+The dialog groups tiles by family, with a /+ all (N)/ chip on each
+family heading to bulk-select all unowned entries. Imports fetch in
+parallel (capped at 8 concurrent) so all 19 switches land in a
+fraction of the time a serial import took.
 
 ** record samples
 
-Click /+ create a switch/, then /▶ record samples/. A visual
-metronome paces you through ~60 taps that gradually speed up. After
-the run, thock picks ~30 of the cleanest taps across the tempo range
-and keeps those. If too few were usable, it asks before saving.
+Click /+ new/, give the switch a name, then /▶ record samples/. A
+visual metronome paces you through ~60 taps that gradually speed up.
+After the run, thock picks ~30 of the cleanest taps across the
+tempo range and auto-saves them. If too few are usable, the status
+line surfaces a warning so you know to record again.
 
 ** fingerprint
 
 Averaged smoothed spectrum across all the samples of the currently
-selected switch. Selecting a different switch redraws the curve on
-the same axes for direct comparison.
+selected switch, plus a small vertical travel-viz showing where the
+switch's actuation point sits inside its full travel range,
+anchored at the floor like the switch sits on a PCB. Selecting a
+different switch redraws the curves on the same axes for direct
+comparison.
+
+** inspect
+
+Single-sample view — waveform, FFT, spectrogram, and down→up timing
+for the currently picked sample. /▶ play/ in this panel also drops
+the sample's pulse into the typist viz so it slides across the time
+axis in colour.
 
 ** typist
 
-Plays back the selected switch's samples as paragraphs of prose at a
-given WPM. Source defaults to a small set of bundled passages;
+Plays back the selected switch's samples as paragraphs of prose at
+a given WPM. Source defaults to a small set of bundled passages;
 attempts to fetch live articles from libertis.net at boot, falls
-back if blocked.
+back if blocked. Clicking another switch hot-swaps the typist
+mid-sentence so you can A/B without stopping.
+
+An /environment/ dropdown applies a 5-stage filter chain (high-pass,
+low-shelf, peaking, low-pass, high-shelf) to the master output bus,
+shaping the playback to mimic different listening contexts:
+
+- =raw= — bypass, signal as captured
+- =gasket build= — warm boutique custom
+- =foam-lined= — premium dampened, deep thock, no sizzle
+- =hollow plastic= — stock case with a 520 Hz ring
+- =tin can= — laptop / thin keyboard
+- =across desk= / =across room= / =next room= — distance presets
+- =underwater= — for fun
 
 ** export
 
@@ -75,5 +114,5 @@ devenv up
 
 * License
 
-MIT for the code. The =library/= recordings are CC-BY (attribute
-mwlabs if you reuse them).
+MIT for the code (=LICENSE=). The =library/= recordings are CC BY 4.0
+(=library/LICENSE=) — attribute MWLabs if you reuse them.
