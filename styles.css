@@ -114,11 +114,19 @@ html.dark .theme-toggle .theme-icon-moon { display: none; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 22px 28px 18px;
+  /* Padding mirrors mwlabs.be Header: 24px L/R, 24/20 top/bottom on
+     mobile, 36/32 on >= 640px. Keeps the brand chrome consistent
+     across the two sites. */
+  padding: 24px 24px 20px;
   border-bottom: 1px solid var(--line);
   position: relative;
   z-index: 1;
   background: var(--bg);
+}
+@media (min-width: 640px) {
+  .topbar {
+    padding: 36px 24px 32px;
+  }
 }
 
 .topbar h1 {
@@ -157,7 +165,7 @@ html.dark .theme-toggle .theme-icon-moon { display: none; }
 
 #status-text {
   color: var(--ink-dim);
-  font-size: 0.78rem;
+  font-size: 13px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
 }
