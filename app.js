@@ -341,8 +341,9 @@ const state = {
 
   // Master output bus + filter chain for room/mic-position presets.
   // Wired up by ensureAudioCtx() on first audio unlock.
-  audioOut: null, roomLP: null, roomHS: null,
-  roomPreset: "close",
+  audioOut: null, roomHP: null, roomLS: null, roomPeak: null,
+  roomLP: null, roomHS: null,
+  roomPreset: "raw",
 
   // recent sample indices — keeps the same WAV from repeating back to
   // back, which is the most obvious "fake" tell when listening
@@ -653,10 +654,30 @@ async function ensureAudioCtx() {
 
   // Master playback bus. All audio sources (typist, inspect ▶ play,
   // ▶ play all) feed audioOut instead of ctx.destination directly so
-  // the room/mic-position EQ can be applied uniformly. Default state
-  // is transparent — lowpass at Nyquist + flat high-shelf — so until
-  // a preset is picked the signal is unchanged.
+  // the room / housing EQ can be applied uniformly.
+  //
+  // Chain: audioOut → HP → LS → Peak → LP → HS → destination
+  //   HP    — high-pass, kills the close-mic plate-vibration rumble
+  //   LS    — low-shelf, sculpts the thock body weight
+  //   Peak  — peaking filter, dials in housing resonance / hollow ring
+  //   LP    — low-pass, sets how much HF survives the distance
+  //   HS    — high-shelf, fine-tunes the upper-mid sparkle
+  // The default preset ('raw') leaves every stage flat / wide so the
+  // bypass case really is bypass.
   state.audioOut = ctx.createGain();
+  state.roomHP = ctx.createBiquadFilter();
+  state.roomHP.type = "highpass";
+  state.roomHP.frequency.value = 20;
+  state.roomHP.Q.value = 0.707;
+  state.roomLS = ctx.createBiquadFilter();
+  state.roomLS.type = "lowshelf";
+  state.roomLS.frequency.value = 200;
+  state.roomLS.gain.value = 0;
+  state.roomPeak = ctx.createBiquadFilter();
+  state.roomPeak.type = "peaking";
+  state.roomPeak.frequency.value = 1000;
+  state.roomPeak.Q.value = 1;
+  state.roomPeak.gain.value = 0;
   state.roomLP = ctx.createBiquadFilter();
   state.roomLP.type = "lowpass";
   state.roomLP.frequency.value = ctx.sampleRate / 2;
@@ -665,31 +686,80 @@ async function ensureAudioCtx() {
   state.roomHS.type = "highshelf";
   state.roomHS.frequency.value = 2500;
   state.roomHS.gain.value = 0;
-  state.audioOut.connect(state.roomLP).connect(state.roomHS).connect(ctx.destination);
+  state.audioOut
+    .connect(state.roomHP)
+    .connect(state.roomLS)
+    .connect(state.roomPeak)
+    .connect(state.roomLP)
+    .connect(state.roomHS)
+    .connect(ctx.destination);
 
   // Re-apply the last preset choice (might have been set before
   // audio was unlocked).
-  applyRoomPreset(state.roomPreset || "close");
+  applyRoomPreset(state.roomPreset || "raw");
   return ctx;
 }
 
-// EQ presets — biquad filter values picked by ear, not by impulse
-// response. They're meant as plausible "what would this switch sound
-// like in [context]" hints, not engineering-grade simulations.
+// EQ presets — biquad chain values tuned by ear, not by impulse
+// response. Each preset shapes:
+//
+//   hp       high-pass cutoff (Hz)           kills close-mic plate rumble
+//   ls       low-shelf gain (dB) / lsFreq    body weight
+//   peak     peaking gain (dB) / peakFreq / peakQ   housing resonance
+//   lp       low-pass cutoff (Hz)            distance / damping
+//   hs       high-shelf gain (dB) / hsFreq   sparkle / harshness
+//
+// The library recordings were captured very close to the keyboard
+// plate, so a fair chunk of the low end on the WAV is artificial
+// proximity / vibrating-plate energy you'd never hear from arm's
+// length. Most presets aggressively HP that out; only 'raw' lets it
+// through, since 'raw' is documenting the source material.
 const ROOM_PRESETS = {
-  close:      { lp: 22050, hs: 0,   hsFreq: 2500 },  // bypass
-  desk:       { lp: 7000,  hs: -3,  hsFreq: 3500 },  // arm's length
-  far:        { lp: 3000,  hs: -8,  hsFreq: 2500 },  // across the room
-  next_room:  { lp: 1200,  hs: -18, hsFreq: 1500 },  // through a door
+  // True bypass — no EQ, no HP. The recording exactly as captured.
+  raw:        { hp: 20,   lp: 22050, hs: 0,   hsFreq: 2500, ls: 0,   lsFreq: 200, peak: 0,  peakFreq: 1000, peakQ: 1 },
+
+  // Boutique custom: aluminium case + gasket + foam. Warm low-mids,
+  // dampened click harmonics, slight bass lift from the case mass.
+  // Moderate HP since the case still couples some low end to you.
+  gasket:     { hp: 90,   lp: 9000,  hs: -3,  hsFreq: 3500, ls: 4,   lsFreq: 110, peak: 2,  peakFreq: 240,  peakQ: 1.8 },
+
+  // Premium custom with thick foam: tighter HF, no upper-mid sizzle,
+  // very pronounced thock body. Bass lift, gentle HP.
+  foam:       { hp: 70,   lp: 7000,  hs: -5,  hsFreq: 3000, ls: 5,   lsFreq: 130, peak: 0,  peakFreq: 1000, peakQ: 1 },
+
+  // Stock plastic case, no foam: hollow ring at ~520 Hz, mild bass
+  // loss, brighter top. HP cleans up the worst of the plate rumble.
+  hollow:     { hp: 140,  lp: 9500,  hs: 1,   hsFreq: 4000, ls: -2,  lsFreq: 100, peak: 7,  peakFreq: 520,  peakQ: 3 },
+
+  // Thin laptop / cheap travel keyboard: scooped bass, sharp click-
+  // band peak, no body. Heavy HP, deep low-shelf cut.
+  tin_can:    { hp: 320,  lp: 7500,  hs: -2,  hsFreq: 2000, ls: -10, lsFreq: 220, peak: 9,  peakFreq: 1400, peakQ: 5 },
+
+  // Across the desk (~1 m). Plate rumble doesn't propagate at all
+  // through the air — strong HP, gentle HF rolloff.
+  desk:       { hp: 200,  lp: 5500,  hs: -6,  hsFreq: 2500, ls: -1,  lsFreq: 150, peak: 0,  peakFreq: 1000, peakQ: 1 },
+
+  // Across the room (~3 m, soft furnishings absorb HF first).
+  far:        { hp: 260,  lp: 2500,  hs: -14, hsFreq: 1800, ls: -3,  lsFreq: 200, peak: 0,  peakFreq: 1000, peakQ: 1 },
+
+  // Through a closed door — heavy LP, big bass cutoff (walls block low
+  // and high but pass mids).
+  next_room:  { hp: 320,  lp: 900,   hs: -28, hsFreq: 1200, ls: -10, lsFreq: 250, peak: 0,  peakFreq: 1000, peakQ: 1 },
 };
 
 function applyRoomPreset(name) {
   state.roomPreset = name;
-  const p = ROOM_PRESETS[name] || ROOM_PRESETS.close;
+  const p = ROOM_PRESETS[name] || ROOM_PRESETS.raw;
   if (!state.audioCtx) return;  // applied lazily on ensureAudioCtx
   const t = state.audioCtx.currentTime;
   // Short ramp so flipping presets mid-playback doesn't click.
   const TC = 0.04;
+  state.roomHP.frequency.setTargetAtTime(p.hp, t, TC);
+  state.roomLS.frequency.setTargetAtTime(p.lsFreq, t, TC);
+  state.roomLS.gain.setTargetAtTime(p.ls, t, TC);
+  state.roomPeak.frequency.setTargetAtTime(p.peakFreq, t, TC);
+  state.roomPeak.Q.setTargetAtTime(p.peakQ, t, TC);
+  state.roomPeak.gain.setTargetAtTime(p.peak, t, TC);
   state.roomLP.frequency.setTargetAtTime(p.lp, t, TC);
   state.roomHS.frequency.setTargetAtTime(p.hsFreq, t, TC);
   state.roomHS.gain.setTargetAtTime(p.hs, t, TC);
