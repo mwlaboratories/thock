@@ -718,14 +718,18 @@ const ROOM_PRESETS = {
   // True bypass — no EQ, no HP. The recording exactly as captured.
   raw:        { hp: 20,   lp: 22050, hs: 0,   hsFreq: 2500, ls: 0,   lsFreq: 200, peak: 0,  peakFreq: 1000, peakQ: 1 },
 
-  // Boutique custom: aluminium case + gasket + foam. Warm low-mids,
-  // dampened click harmonics, slight bass lift from the case mass.
-  // Moderate HP since the case still couples some low end to you.
-  gasket:     { hp: 90,   lp: 9000,  hs: -3,  hsFreq: 3500, ls: 4,   lsFreq: 110, peak: 2,  peakFreq: 240,  peakQ: 1.8 },
+  // Boutique custom: aluminium case + gasket + some foam. Heavy case
+  // mass shelves up bass body, gasket absorbs HF aggressively, low-mid
+  // peak around 250 Hz delivers the signature warm thock. Click-band
+  // sizzle gets damped by the gasket/foam combo.
+  gasket:     { hp: 100,  lp: 6500,  hs: -7,  hsFreq: 3000, ls: 6,   lsFreq: 120, peak: 3,  peakFreq: 250,  peakQ: 2 },
 
-  // Premium custom with thick foam: tighter HF, no upper-mid sizzle,
-  // very pronounced thock body. Bass lift, gentle HP.
-  foam:       { hp: 70,   lp: 7000,  hs: -5,  hsFreq: 3000, ls: 5,   lsFreq: 130, peak: 0,  peakFreq: 1000, peakQ: 1 },
+  // Premium custom with thick case foam + plate foam: foam absorbs
+  // upper mids and HF aggressively, kills the ring, and the
+  // reverberant cavity goes to zero so what's left is a deep,
+  // dampened thock. LP comes down hard, HF shelf dives, click-band
+  // gets a peaking cut, bass shelves up generously.
+  foam:       { hp: 90,   lp: 4500,  hs: -10, hsFreq: 2500, ls: 7,   lsFreq: 140, peak: -4, peakFreq: 1500, peakQ: 1.5 },
 
   // Stock plastic case, no foam: hollow ring at ~520 Hz, mild bass
   // loss, brighter top. HP cleans up the worst of the plate rumble.
