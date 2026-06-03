@@ -338,6 +338,12 @@ const state = {
   playAll: null,
   typingPulses: [],
   typedChars: [],
+
+  // Master output bus + filter chain for room/mic-position presets.
+  // Wired up by ensureAudioCtx() on first audio unlock.
+  audioOut: null, roomLP: null, roomHS: null,
+  roomPreset: "close",
+
   // recent sample indices — keeps the same WAV from repeating back to
   // back, which is the most obvious "fake" tell when listening
   typingRecentIdx: [],
@@ -644,7 +650,49 @@ async function ensureAudioCtx() {
   });
   state.audioCtx = ctx;
   state.sampleRate = ctx.sampleRate;
+
+  // Master playback bus. All audio sources (typist, inspect ▶ play,
+  // ▶ play all) feed audioOut instead of ctx.destination directly so
+  // the room/mic-position EQ can be applied uniformly. Default state
+  // is transparent — lowpass at Nyquist + flat high-shelf — so until
+  // a preset is picked the signal is unchanged.
+  state.audioOut = ctx.createGain();
+  state.roomLP = ctx.createBiquadFilter();
+  state.roomLP.type = "lowpass";
+  state.roomLP.frequency.value = ctx.sampleRate / 2;
+  state.roomLP.Q.value = 0.707;
+  state.roomHS = ctx.createBiquadFilter();
+  state.roomHS.type = "highshelf";
+  state.roomHS.frequency.value = 2500;
+  state.roomHS.gain.value = 0;
+  state.audioOut.connect(state.roomLP).connect(state.roomHS).connect(ctx.destination);
+
+  // Re-apply the last preset choice (might have been set before
+  // audio was unlocked).
+  applyRoomPreset(state.roomPreset || "close");
   return ctx;
+}
+
+// EQ presets — biquad filter values picked by ear, not by impulse
+// response. They're meant as plausible "what would this switch sound
+// like in [context]" hints, not engineering-grade simulations.
+const ROOM_PRESETS = {
+  close:      { lp: 22050, hs: 0,   hsFreq: 2500 },  // bypass
+  desk:       { lp: 7000,  hs: -3,  hsFreq: 3500 },  // arm's length
+  far:        { lp: 3000,  hs: -8,  hsFreq: 2500 },  // across the room
+  next_room:  { lp: 1200,  hs: -18, hsFreq: 1500 },  // through a door
+};
+
+function applyRoomPreset(name) {
+  state.roomPreset = name;
+  const p = ROOM_PRESETS[name] || ROOM_PRESETS.close;
+  if (!state.audioCtx) return;  // applied lazily on ensureAudioCtx
+  const t = state.audioCtx.currentTime;
+  // Short ramp so flipping presets mid-playback doesn't click.
+  const TC = 0.04;
+  state.roomLP.frequency.setTargetAtTime(p.lp, t, TC);
+  state.roomHS.frequency.setTargetAtTime(p.hsFreq, t, TC);
+  state.roomHS.gain.setTargetAtTime(p.hs, t, TC);
 }
 
 async function enableMic() {
@@ -2695,7 +2743,7 @@ async function startTyping() {
       const pan = state.audioCtx.createStereoPanner();
       pan.pan.value = panForChar(ch);
 
-      src.connect(gain).connect(pan).connect(state.audioCtx.destination);
+      src.connect(gain).connect(pan).connect(state.audioOut);
       src.start(nextTime);
 
       schedulePulse(nextTime, poolName, t.meta.mini, ch);
@@ -3355,7 +3403,7 @@ function playSampleNow(t) {
   gain.gain.linearRampToValueAtTime(1, start + FADE_IN);
   gain.gain.setValueAtTime(1, start + Math.max(FADE_IN, dur - FADE_OUT));
   gain.gain.linearRampToValueAtTime(0, start + dur);
-  src.connect(gain).connect(ctx.destination);
+  src.connect(gain).connect(state.audioOut);
   src.start(start);
 
   // Also drop the sample's pulse into the typist viz so it slides
@@ -3403,7 +3451,7 @@ async function togglePlayAll() {
     gain.gain.linearRampToValueAtTime(1, next + FADE_IN);
     gain.gain.setValueAtTime(1, next + Math.max(FADE_IN, buf.duration - FADE_OUT));
     gain.gain.linearRampToValueAtTime(0, next + buf.duration);
-    src.connect(gain).connect(state.audioCtx.destination);
+    src.connect(gain).connect(state.audioOut);
     src.start(next);
     next += buf.duration + GAP_S;
     i++;
@@ -4013,6 +4061,22 @@ function wire() {
     } else {
       startTyping().catch((e) => { console.error(e); setStatus("typing error: " + e.message); });
     }
+  });
+
+  // Restore last-chosen room preset (localStorage), then wire the
+  // dropdown. AudioContext may not exist yet; applyRoomPreset stores
+  // the choice and re-applies it when ensureAudioCtx() runs.
+  try {
+    const saved = localStorage.getItem("thock.roomPreset");
+    if (saved && ROOM_PRESETS[saved]) {
+      state.roomPreset = saved;
+      $("room-preset").value = saved;
+    }
+  } catch (_) {}
+  $("room-preset").addEventListener("change", (e) => {
+    const v = e.target.value;
+    applyRoomPreset(v);
+    try { localStorage.setItem("thock.roomPreset", v); } catch (_) {}
   });
 
 
