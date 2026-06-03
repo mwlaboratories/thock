@@ -1495,7 +1495,14 @@ async function _commitGuidedSession() {
   await refreshSwitches();
   if (sw === state.currentSwitch) await loadSwitchSamples(sw);
   refreshPrimary();
-  setStatus(`recorded · ${saved} samples kept (from ${cycles.length} cycles)`);
+  // Warn if the yield is below the soft threshold — same threshold the
+  // old summary modal used to gate its 'try again' suggestion. Status
+  // text is the place to surface it now that the modal is gone.
+  if (saved < REC_MIN_ACCEPTABLE) {
+    setStatus(`recorded · only ${saved} samples kept — consider recording again for better quality`);
+  } else {
+    setStatus(`recorded · ${saved} samples kept (from ${cycles.length} cycles)`);
+  }
 }
 
 // User chose "try again" — discard the processed session and restart
