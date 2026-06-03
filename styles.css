@@ -152,24 +152,17 @@ html.dark .theme-toggle .theme-icon-moon { display: none; }
   font-feature-settings: "zero" on;
   color: var(--ink);
   line-height: 1;
-  /* relative so .brand-prefix can hang absolutely to the left */
-  position: relative;
 }
-/* The 'thock.' prefix is absolutely positioned to the left of the
-   brand-link so 'mwlabs' lands at the exact same X coordinate as
-   the BrandMark on mwlabs.be. The prefix stretches vertically
-   over the full height of the h1 (top: 0; bottom: 0) and uses
-   flex + align-items: center so its text is centered on the same
-   line as the brand-link — without this, the prefix and the link
-   render in different layout contexts and their text baselines
-   drift apart. */
+/* Prefix and link are plain inline-block siblings in the h1 line-box.
+   Identical display + line-height + vertical-align means they share a
+   baseline natively, no positioning trickery. Trade-off: 'mwlabs' is
+   no longer pinned to the parent BrandMark's exact x-coordinate; it
+   sits ~78px to the right of where it does on mwlabs.be. In exchange
+   the local 'thock.mwlabs' reads as a single phrase on one baseline. */
 .brand-prefix {
-  position: absolute;
-  right: 100%;
-  top: 0;
-  bottom: 0;
-  display: flex;
-  align-items: center;
+  display: inline-block;
+  line-height: 1;
+  vertical-align: middle;
   white-space: nowrap;
 }
 .brand-prefix .accent { color: var(--accent); }
@@ -180,12 +173,12 @@ html.dark .theme-toggle .theme-icon-moon { display: none; }
 .brand-link,
 .brand-link:visited,
 .brand-link:active {
-  color: var(--ink-dim);
-  text-decoration: none;
-  transition: color 120ms ease;
   display: inline-block;
   line-height: 1;
   vertical-align: middle;
+  color: var(--ink-dim);
+  text-decoration: none;
+  transition: color 120ms ease;
 }
 .brand-link:hover { color: var(--accent); }
 .brand-link:focus-visible {
