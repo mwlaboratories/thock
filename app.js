@@ -3357,6 +3357,18 @@ function playSampleNow(t) {
   gain.gain.linearRampToValueAtTime(0, start + dur);
   src.connect(gain).connect(ctx.destination);
   src.start(start);
+
+  // Also drop the sample's pulse into the typist viz so it slides
+  // in from the right edge and scrolls across the time axis — same
+  // path as a typed keystroke, just triggered from the inspect panel.
+  if (t.meta.mini && t.switch) {
+    state.typingPulses.push({
+      t: performance.now(),
+      name: t.switch,
+      mini: t.meta.mini,
+    });
+    if (state.typingPulses.length > 240) state.typingPulses.shift();
+  }
 }
 
 // Play every loaded sample in current sort order, gap of ~120 ms
