@@ -918,6 +918,34 @@ canvas {
 }
 .switch-tile.active .ct      { color: var(--bg); opacity: 0.65; }
 .switch-tile.active .swatch  { border-color: var(--bg); }
+
+/* Tiny inline bar graph showing where the switch sits on the
+   0–3.5 mm travel axis. Background hairline = full axis;
+   coloured stroke runs 0 → bottom-out; vertical tick marks the
+   actuation (pre-travel) point. Used both in the main switch grid
+   and the library dialog. */
+.travel-viz {
+  flex-shrink: 0;
+  overflow: visible;
+}
+.travel-viz .tv-bg {
+  stroke: var(--line-2);
+  stroke-width: 1;
+}
+.travel-viz .tv-total {
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  opacity: 0.55;
+}
+.travel-viz .tv-actuation {
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+/* Selected/active tile inverts to the switch's colour, so we recolour
+   the viz to read against that background. */
+.switch-tile.active .travel-viz .tv-bg       { stroke: var(--bg); opacity: 0.35; }
+.switch-tile.active .travel-viz .tv-total    { stroke: var(--bg); opacity: 0.75; }
+.switch-tile.active .travel-viz .tv-actuation{ stroke: var(--bg); }
 .switch-tile.pulse::after {
   content: "";
   position: absolute;

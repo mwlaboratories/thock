@@ -537,6 +537,39 @@ function loadSwitchMeta() {
   } catch (_) { /* malformed → start fresh */ }
 }
 
+// Travel viz: the description carries "<pre> / <total> mm" at the
+// end (set by the library catalogue). Pull those out for the small
+// bar graph rendered next to the switch name.
+function parseTravel(desc) {
+  if (!desc) return null;
+  const m = /([\d.]+)\s*\/\s*([\d.]+)\s*mm/.exec(desc);
+  if (!m) return null;
+  const pre = parseFloat(m[1]);
+  const total = parseFloat(m[2]);
+  if (!isFinite(pre) || !isFinite(total) || total <= 0) return null;
+  return { pre, total };
+}
+
+// Inline SVG bar showing where this switch sits on the 0–3.5 mm
+// travel axis. Background hairline = the full axis, so cross-switch
+// extremes are visually obvious; the coloured bar runs 0 → bottom-out;
+// a darker tick marks the actuation (pre-travel) point. Tooltip carries
+// the literal mm values.
+function travelVizSVG(pre, total, titleText) {
+  const MAX = 3.5;   // mm domain — covers chocv2 standard (3.2) with headroom
+  const W = 42;
+  const H = 12;
+  const pPre = Math.max(0, Math.min(1, pre / MAX)) * W;
+  const pTot = Math.max(0, Math.min(1, total / MAX)) * W;
+  const mid = H / 2;
+  return `<svg class="travel-viz" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"`
+    + ` role="img" aria-label="${titleText}"><title>${titleText}</title>`
+    + `<line class="tv-bg" x1="0.5" y1="${mid}" x2="${W - 0.5}" y2="${mid}"/>`
+    + `<line class="tv-total" x1="0.5" y1="${mid}" x2="${pTot}" y2="${mid}" stroke="var(--c, ${"#999"})"/>`
+    + `<line class="tv-actuation" x1="${pPre}" y1="2" x2="${pPre}" y2="${H - 2}" stroke="var(--c, ${"#999"})"/>`
+    + `</svg>`;
+}
+
 // Display name for a switch: library-provided name if imported, else
 // the raw directory id (which is also what the user typed if they
 // created the switch themselves via "+ new").
@@ -3337,8 +3370,14 @@ function makeSwitchTile(sw, isActive, onSelect) {
   tile.dataset.name = sw.name;
   const color = colorForSwitch(sw.name);
   tile.style.setProperty("--c", color);
+  const meta = state.switchMeta.get(sw.name);
+  const travel = parseTravel(meta && meta.description);
+  const viz = travel
+    ? travelVizSVG(travel.pre, travel.total, "actuates at " + travel.pre + " mm, bottoms out at " + travel.total + " mm")
+    : "";
   tile.innerHTML = `
     <button class="swatch" type="button" aria-label="change color"></button>
+    ${viz}
     <span class="name"></span>
     <span class="ct">${sw.count}</span>
   `;
@@ -3861,9 +3900,14 @@ function _renderLibraryList() {
       const parts = desc.split("·").map((s) => s.trim()).filter(Boolean);
       const typeBadge = parts[0] || _switchType(p);
       const weightBadge = parts[1] || "";
+      const travel = parseTravel(desc);
+      const viz = travel
+        ? travelVizSVG(travel.pre, travel.total, "actuates at " + travel.pre + " mm, bottoms out at " + travel.total + " mm")
+        : "";
       tile.innerHTML = `
         <div class="library-tile-head">
           <span class="library-tile-dot"></span>
+          ${viz}
           <span class="library-tile-name"></span>
           <span class="library-tile-check">✓</span>
         </div>
