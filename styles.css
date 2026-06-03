@@ -17,10 +17,10 @@
   --ink:       #0b1220;
   --ink-dim:   #475569;
   --ink-mute:  #7e8aa0;
-  --accent:    #1849d6;
-  --accent-2:  #2f5cf0;
-  --accent-soft:  rgba(24, 73, 214, 0.16);
-  --accent-faint: rgba(24, 73, 214, 0.07);
+  --accent:    #d97706;
+  --accent-2:  #b45309;
+  --accent-soft:  rgba(217, 119, 6, 0.16);
+  --accent-faint: rgba(217, 119, 6, 0.07);
   --ok:        #1a8a4a;
   --danger:    #c4302b;
   --grid:      #e9eef5;
@@ -47,10 +47,10 @@ html.dark {
   --ink:       #e8edf5;
   --ink-dim:   #9aa6ba;
   --ink-mute:  #5f6d82;
-  --accent:    #6b8dff;
-  --accent-2:  #88a4ff;
-  --accent-soft:  rgba(107, 141, 255, 0.20);
-  --accent-faint: rgba(107, 141, 255, 0.10);
+  --accent:    #f59e0b;
+  --accent-2:  #fbbf24;
+  --accent-soft:  rgba(245, 158, 11, 0.20);
+  --accent-faint: rgba(245, 158, 11, 0.10);
   --ok:        #5bd98a;
   --danger:    #e0726a;
   --grid:      #182640;
@@ -125,7 +125,7 @@ html.dark .theme-toggle .theme-icon-moon { display: none; }
   margin: 0;
   font-family: var(--font-mono);
   font-weight: 600;
-  font-size: 2.1rem;
+  font-size: 22px;
   letter-spacing: -0.02em;
   font-feature-settings: "zero" on;
   color: var(--ink);
