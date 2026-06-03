@@ -1343,6 +1343,50 @@ dialog input:focus { outline: none; border-color: var(--accent); }
   .switch-tile { padding: 10px 12px; font-size: 0.95rem; }
   .action.small { padding: 8px 14px; font-size: 0.8rem; }
 
+  /* Fingerprint on mobile: the desktop layout uses 'margin-left: auto'
+     on the meta chip + a non-wrapping flex row, so the meta gets pushed
+     past the right edge on narrow viewports. Wrap the head, drop the
+     push-right, scale the display name down, and add top breathing
+     room between the switch grid and the fingerprint card. */
+  .switch-pane .fingerprint {
+    margin-top: 14px;
+    padding: 12px 14px 10px;
+    overflow: hidden;
+  }
+  .fingerprint-head {
+    flex-wrap: wrap;
+    row-gap: 8px;
+    gap: 10px;
+    /* Top-align everything so the travel viz sits with the first
+       line of the (possibly-wrapped) display title, not the bottom
+       of its stretched flex slot. */
+    align-items: flex-start;
+  }
+  .fp-name {
+    font-size: 1.5rem;
+    line-height: 1.05;
+  }
+  .fp-travel {
+    align-self: flex-start;
+    align-items: flex-start;
+  }
+  .fp-label {
+    /* Nudge the eyebrow down a hair so it visually centres on the
+       first line of the title even with top alignment. */
+    padding-top: 4px;
+  }
+  .fp-tags {
+    flex-basis: 100%;
+    gap: 5px;
+  }
+  .fp-meta {
+    flex-basis: 100%;
+    margin-left: 0;
+    font-size: 0.62rem;
+    letter-spacing: 0.12em;
+  }
+  #fingerprint { height: 180px; }
+
   .typist-controls { gap: 8px; }
   .typist-controls .hint { display: none; }
   #typist-text { height: 44px; }
