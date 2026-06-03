@@ -1394,19 +1394,10 @@ async function finishGuided(cancelled) {
 
   g.processed = { pcm, sr, cycles, selected, pairedCount, pairRate, sessionStartAbs: 0 };
 
-  // Below the bar — let the user decide whether to keep or retry.
-  if (selected.length < REC_MIN_ACCEPTABLE) {
-    _showSummary({
-      kept: selected.length,
-      cycles: cycles.length,
-      paired: pairedCount,
-      pairRate,
-      good: false,
-    });
-    return;
-  }
-
-  // Good run — commit immediately.
+  // Auto-commit regardless of yield. Marginal sessions used to surface
+  // a 'try again / keep these' summary; now we just save whatever the
+  // metronome captured. The user can re-record from the main grid if
+  // the result isn't good enough.
   await _commitGuidedSession();
 }
 
@@ -1444,9 +1435,8 @@ function _hideSummary() {
   if (metro) metro.style.display = "";
   const hint = $("guided-hint");
   if (hint) hint.style.display = "";
-  $("guided-retry").classList.add("hidden");
-  $("guided-accept").classList.add("hidden");
-  $("guided-cancel").textContent = "cancel";
+  const cancel = $("guided-cancel");
+  if (cancel) cancel.textContent = "cancel";
 }
 
 async function _commitGuidedSession() {
@@ -4277,12 +4267,6 @@ function wire() {
   };
 
   $("guided-cancel").addEventListener("click", cancelGuided);
-  $("guided-retry").addEventListener("click", () => {
-    _retryGuidedSession().catch((e) => { console.error(e); setStatus("retry failed: " + e.message); });
-  });
-  $("guided-accept").addEventListener("click", () => {
-    _commitGuidedSession().catch((e) => { console.error(e); setStatus("save failed: " + e.message); });
-  });
 
   // Storage UI removed — OPFS is auto-initialized at boot. No buttons
   // to wire here. pickStorage / useOpfsStorage are still exported for
