@@ -3684,7 +3684,30 @@ function _renderLibraryList() {
   for (const [family, items] of byFamily) {
     const famEl = document.createElement("div");
     famEl.className = "library-family";
-    famEl.innerHTML = `<div class="library-family-head">${family}</div>`;
+    // Switches in this family the user can actually act on
+    // (the owned ones are excluded — they're already in the set).
+    const selectable = items.filter((p) => !haveIds.has(p.id));
+    const selectableCount = selectable.length;
+    const allSelected = selectableCount > 0 && selectable.every((p) => selected.has(p.id));
+    const bulkLabel = selectableCount === 0
+      ? ""
+      : (allSelected ? `− all` : `+ all (${selectableCount})`);
+    const head = document.createElement("div");
+    head.className = "library-family-head";
+    head.innerHTML = `<span class="library-family-name"></span>`
+      + (bulkLabel ? `<button type="button" class="library-family-bulk">${bulkLabel}</button>` : "");
+    head.querySelector(".library-family-name").textContent = family;
+    if (bulkLabel) {
+      head.querySelector(".library-family-bulk").addEventListener("click", () => {
+        if (allSelected) {
+          for (const p of selectable) selected.delete(p.id);
+        } else {
+          for (const p of selectable) selected.add(p.id);
+        }
+        _renderLibraryList();
+      });
+    }
+    famEl.appendChild(head);
     const grid = document.createElement("div");
     grid.className = "library-grid";
     for (const p of items) {
@@ -3778,21 +3801,37 @@ async function importSelectedFromLibrary() {
   let totalFiles = 0, doneFiles = 0;
   for (const p of wanted) totalFiles += (p.files || []).length;
 
+  // Browsers cap concurrent fetches per origin at ~6; pushing 8 workers
+  // keeps the pipeline saturated without paying for extra queuing.
+  const CONCURRENCY = 8;
+
   try {
     for (const preset of wanted) {
       try {
         const dir = await state.storageHandle.getDirectoryHandle(preset.id, { create: true });
-        for (const file of (preset.files || [])) {
-          const r = await fetch(`/library/${encodeURIComponent(preset.id)}/${encodeURIComponent(file)}`);
-          if (!r.ok) throw new Error("HTTP " + r.status);
-          const ab = await r.arrayBuffer();
-          const fh = await dir.getFileHandle(file, { create: true });
-          const w = await fh.createWritable();
-          await w.write(ab);
-          await w.close();
-          doneFiles++;
-          okBtn.textContent = `importing · ${doneFiles}/${totalFiles}`;
-        }
+        const files = preset.files || [];
+
+        // Parallel fetch + write within a switch, capped at CONCURRENCY.
+        // Workers pull from a shared cursor so fast fetches don't wait on
+        // slower siblings (which they would under a chunked Promise.all).
+        let cursor = 0;
+        const worker = async () => {
+          while (cursor < files.length) {
+            const file = files[cursor++];
+            const r = await fetch(`/library/${encodeURIComponent(preset.id)}/${encodeURIComponent(file)}`);
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            const ab = await r.arrayBuffer();
+            const fh = await dir.getFileHandle(file, { create: true });
+            const w = await fh.createWritable();
+            await w.write(ab);
+            await w.close();
+            doneFiles++;
+            okBtn.textContent = `importing · ${doneFiles}/${totalFiles}`;
+          }
+        };
+        const n = Math.min(CONCURRENCY, files.length);
+        await Promise.all(Array.from({ length: n }, worker));
+
         if (preset.color) setSwitchColor(preset.id, preset.color);
         setSwitchMeta(preset.id, {
           name: preset.name || preset.id,

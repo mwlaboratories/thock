@@ -430,6 +430,27 @@ main {
   padding: 0 2px 6px;
   border-bottom: 1px solid var(--line);
   margin-bottom: 8px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.library-family-bulk {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+  color: var(--ink-dim);
+  background: transparent;
+  border: 1px solid var(--line);
+  padding: 2px 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: border-color 120ms, color 120ms;
+}
+.library-family-bulk:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .library-grid {
   display: grid;
