@@ -157,15 +157,19 @@ html.dark .theme-toggle .theme-icon-moon { display: none; }
 }
 /* The 'thock.' prefix is absolutely positioned to the left of the
    brand-link so 'mwlabs' lands at the exact same X coordinate as
-   the BrandMark on mwlabs.be. Only the brand-link needs the
-   inline-block + align-middle treatment (it lives in the h1's
-   flow line-box). The prefix is out-of-flow already, so leaving
-   it with inherited line-height keeps the 'thock.' text on the
-   same visual baseline as the link. */
+   the BrandMark on mwlabs.be. The prefix stretches vertically
+   over the full height of the h1 (top: 0; bottom: 0) and uses
+   flex + align-items: center so its text is centered on the same
+   line as the brand-link — without this, the prefix and the link
+   render in different layout contexts and their text baselines
+   drift apart. */
 .brand-prefix {
   position: absolute;
   right: 100%;
   top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
   white-space: nowrap;
 }
 .brand-prefix .accent { color: var(--accent); }
