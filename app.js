@@ -550,26 +550,31 @@ function parseTravel(desc) {
   return { pre, total };
 }
 
-// Vertical key-travel viz for the fingerprint header. Shows the
-// 0–3.5 mm domain top-to-bottom (mirroring how a key actually
-// presses down), with the switch's colour filling 0 → bottom-out
-// and a horizontal tick at the actuation depth. Background hairline
-// shows the full axis so cross-switch extremes read at a glance.
-// Tooltip carries the literal mm values.
+// Vertical key-travel viz for the fingerprint header. The bar is
+// anchored at the BOTTOM of the SVG — the switch sits on the PCB
+// like a real one, the colour fills upward by total travel, and
+// the top of the bar is where the keycap rests. Background
+// hairline runs the full 0–3.5 mm domain so a low-profile switch
+// with little travel reads as 'short, anchored at the floor' next
+// to standards that reach further up. Horizontal tick sits inside
+// the bar at the actuation depth (pre-travel below the rest).
 function travelVizSVG(pre, total, titleText) {
   const MAX = 3.5;
   const W = 18;
   const H = 56;
   const padY = 4;
   const usable = H - 2 * padY;
-  const yTop = padY;
-  const yPre = padY + Math.max(0, Math.min(1, pre / MAX)) * usable;
-  const yTot = padY + Math.max(0, Math.min(1, total / MAX)) * usable;
+  const yBottom = H - padY;
+  const barH = Math.max(0, Math.min(1, total / MAX)) * usable;
+  const yTopBar = yBottom - barH;
+  // Actuation tick: pre mm below the top of the bar (rest pos).
+  // Equivalent to (total - pre) mm above bottom-out.
+  const yPre = yBottom - Math.max(0, Math.min(1, (total - pre) / MAX)) * usable;
   const cx = W / 2;
   return `<svg class="travel-viz-v" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"`
     + ` role="img" aria-label="${titleText}"><title>${titleText}</title>`
-    + `<line class="tv-bg" x1="${cx}" y1="${padY}" x2="${cx}" y2="${H - padY}"/>`
-    + `<line class="tv-total" x1="${cx}" y1="${yTop}" x2="${cx}" y2="${yTot}" stroke="var(--c, #999)"/>`
+    + `<line class="tv-bg" x1="${cx}" y1="${padY}" x2="${cx}" y2="${yBottom}"/>`
+    + `<line class="tv-total" x1="${cx}" y1="${yTopBar}" x2="${cx}" y2="${yBottom}" stroke="var(--c, #999)"/>`
     + `<line class="tv-actuation" x1="${cx - 6}" y1="${yPre}" x2="${cx + 6}" y2="${yPre}" stroke="var(--c, #999)"/>`
     + `</svg>`;
 }
