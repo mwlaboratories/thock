@@ -1315,13 +1315,16 @@ dialog input:focus { outline: none; border-color: var(--accent); }
   }
 }
 
+/* The 'open on desktop' notice that sits under the topbar on phones. */
+.mobile-notice { display: none; }
+
 /* phone — strip the lab down to "pick a switch, see its fingerprint,
-   listen to the typist". Mic capture and inspect need a real keyboard
-   plus desktop-sized canvases to be useful, so hide those; samples
-   grid is too wide to be readable, so hide it; but keep the
-   fingerprint visible — it's the main reason someone opens the page. */
+   listen to the typist", with the topbar kept so visitors can hop
+   back to mwlabs.be the same way they would on desktop. Mic capture,
+   inspect, samples grid all need real input or desktop canvases so
+   hide them. A small notice replaces them with a hint to open on
+   desktop for the full toolbox. */
 @media (max-width: 640px) {
-  .topbar,
   .capture-pane,
   .inspect-pane,
   .switch-pane .samples-head,
@@ -1329,6 +1332,27 @@ dialog input:focus { outline: none; border-color: var(--accent); }
   #new-switch,
   #remove-switch-btn {
     display: none;
+  }
+
+  /* Strip the topbar to brand + theme toggle on phones — the
+     status text and live level meter are useless without the mic
+     pipeline, which is desktop-only here. */
+  .topbar { padding: 16px 16px 14px; }
+  .topbar-status #status-text,
+  .topbar-status .level-meter { display: none; }
+
+  .mobile-notice {
+    display: block;
+    margin: 0;
+    padding: 8px 16px;
+    background: var(--accent-faint);
+    color: var(--ink-dim);
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.05em;
+    line-height: 1.4;
+    text-align: center;
+    border-bottom: 1px solid var(--line);
   }
 
   main {
