@@ -74,6 +74,11 @@ html, body {
   text-rendering: optimizeLegibility;
   transition: background-color 0.28s ease, color 0.28s ease;
 }
+html {
+  /* Reserve scrollbar gutter so short and long routes don't shift
+     horizontally on Windows/Linux. Matches the same fix on mwlabs.be. */
+  scrollbar-gutter: stable;
+}
 
 /* graph-paper grid — the datasheet / lab-notebook ground from mwlabs,
    fading out toward the edges. */
@@ -111,17 +116,22 @@ html.dark .theme-toggle .theme-icon-moon { display: none; }
 /* ----------------------------- topbar ----------------------------- */
 
 .topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   /* Padding mirrors mwlabs.be Header: 24px L/R, 24/20 top/bottom on
-     mobile, 36/32 on >= 640px. Keeps the brand chrome consistent
-     across the two sites. */
+     mobile, 36/32 on >= 640px. The actual content is centered inside
+     .topbar-inner (max-width 1152px) so the brand mark lands at the
+     same horizontal position as the BrandMark on mwlabs.be. */
   padding: 24px 24px 20px;
   border-bottom: 1px solid var(--line);
   position: relative;
   z-index: 1;
   background: var(--bg);
+}
+.topbar-inner {
+  max-width: 1152px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 @media (min-width: 640px) {
   .topbar {
