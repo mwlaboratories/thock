@@ -272,7 +272,7 @@ main {
   border-color: var(--accent);
   font-weight: 600;
 }
-.action.primary:hover:not(:disabled) { background: var(--accent-2); }
+.action.primary:hover:not(:disabled) { background: var(--accent-2); color: var(--bg); }
 .action.primary.armed,
 .action.primary.busy {
   box-shadow: 0 0 0 0 var(--accent-soft);
