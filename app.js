@@ -2187,7 +2187,10 @@ function findSpectralPeaks(mag, sr, maxN) {
   const peaks = [];
   for (let i = 4; i < half - 4; i++) {
     const f = (i / N) * sr;
-    if (f < 80 || f > sr / 2 - 200) continue;
+    // Skip the bottom two octaves: anything that low is residual
+    // proximity rumble / plate vibration from the close mic, not
+    // useful switch character.
+    if (f < 250 || f > sr / 2 - 200) continue;
     const iLow = Math.max(1, Math.round(i / factor));
     const iHigh = Math.min(half - 1, Math.round(i * factor));
     let isPeak = true, localMax = 0;
