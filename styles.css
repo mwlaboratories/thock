@@ -919,33 +919,29 @@ canvas {
 .switch-tile.active .ct      { color: var(--bg); opacity: 0.65; }
 .switch-tile.active .swatch  { border-color: var(--bg); }
 
-/* Tiny inline bar graph showing where the switch sits on the
-   0–3.5 mm travel axis. Background hairline = full axis;
-   coloured stroke runs 0 → bottom-out; vertical tick marks the
-   actuation (pre-travel) point. Used both in the main switch grid
-   and the library dialog. */
-.travel-viz {
+/* Vertical key-travel viz that sits between the FINGERPRINT eyebrow
+   and the switch name. Reads top-to-bottom on a 0–3.5 mm axis,
+   mirroring how a key actually presses. Background hairline = the
+   full axis (cross-switch extremes are obvious at a glance); coloured
+   line runs 0 → bottom-out; horizontal tick at the actuation depth. */
+.travel-viz-v {
   flex-shrink: 0;
   overflow: visible;
+  display: block;
 }
-.travel-viz .tv-bg {
+.travel-viz-v .tv-bg {
   stroke: var(--line-2);
   stroke-width: 1;
 }
-.travel-viz .tv-total {
-  stroke-width: 2.5;
+.travel-viz-v .tv-total {
+  stroke-width: 3;
   stroke-linecap: round;
   opacity: 0.55;
 }
-.travel-viz .tv-actuation {
+.travel-viz-v .tv-actuation {
   stroke-width: 1.5;
   stroke-linecap: round;
 }
-/* Selected/active tile inverts to the switch's colour, so we recolour
-   the viz to read against that background. */
-.switch-tile.active .travel-viz .tv-bg       { stroke: var(--bg); opacity: 0.35; }
-.switch-tile.active .travel-viz .tv-total    { stroke: var(--bg); opacity: 0.75; }
-.switch-tile.active .travel-viz .tv-actuation{ stroke: var(--bg); }
 .switch-tile.pulse::after {
   content: "";
   position: absolute;
@@ -1031,6 +1027,17 @@ canvas {
   color: var(--accent);
   line-height: 1;
 }
+
+/* Vertical travel viz slot in the fingerprint header. Self-aligns
+   to the bottom of the surrounding flex row (which uses baseline
+   alignment) so the bar's bottom sits on the same baseline as
+   the rest of the header. */
+.fp-travel {
+  display: inline-flex;
+  align-self: stretch;
+  align-items: flex-end;
+}
+.fp-travel:empty { display: none; }
 .fp-controls {
   display: flex;
   gap: 6px;
@@ -1308,15 +1315,15 @@ dialog input:focus { outline: none; border-color: var(--accent); }
   }
 }
 
-/* phone — strip the lab down to "pick a switch, listen to the typist".
-   Mic capture, fingerprint, samples grid, and inspect all want a real
-   keyboard and a desktop-sized canvas to be useful, so hide them
-   outright rather than squeeze them into a 360 px column. */
+/* phone — strip the lab down to "pick a switch, see its fingerprint,
+   listen to the typist". Mic capture and inspect need a real keyboard
+   plus desktop-sized canvases to be useful, so hide those; samples
+   grid is too wide to be readable, so hide it; but keep the
+   fingerprint visible — it's the main reason someone opens the page. */
 @media (max-width: 640px) {
   .topbar,
   .capture-pane,
   .inspect-pane,
-  .switch-pane .fingerprint,
   .switch-pane .samples-head,
   .switch-pane .samples,
   #new-switch,

@@ -550,23 +550,27 @@ function parseTravel(desc) {
   return { pre, total };
 }
 
-// Inline SVG bar showing where this switch sits on the 0–3.5 mm
-// travel axis. Background hairline = the full axis, so cross-switch
-// extremes are visually obvious; the coloured bar runs 0 → bottom-out;
-// a darker tick marks the actuation (pre-travel) point. Tooltip carries
-// the literal mm values.
+// Vertical key-travel viz for the fingerprint header. Shows the
+// 0–3.5 mm domain top-to-bottom (mirroring how a key actually
+// presses down), with the switch's colour filling 0 → bottom-out
+// and a horizontal tick at the actuation depth. Background hairline
+// shows the full axis so cross-switch extremes read at a glance.
+// Tooltip carries the literal mm values.
 function travelVizSVG(pre, total, titleText) {
-  const MAX = 3.5;   // mm domain — covers chocv2 standard (3.2) with headroom
-  const W = 42;
-  const H = 12;
-  const pPre = Math.max(0, Math.min(1, pre / MAX)) * W;
-  const pTot = Math.max(0, Math.min(1, total / MAX)) * W;
-  const mid = H / 2;
-  return `<svg class="travel-viz" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"`
+  const MAX = 3.5;
+  const W = 18;
+  const H = 56;
+  const padY = 4;
+  const usable = H - 2 * padY;
+  const yTop = padY;
+  const yPre = padY + Math.max(0, Math.min(1, pre / MAX)) * usable;
+  const yTot = padY + Math.max(0, Math.min(1, total / MAX)) * usable;
+  const cx = W / 2;
+  return `<svg class="travel-viz-v" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"`
     + ` role="img" aria-label="${titleText}"><title>${titleText}</title>`
-    + `<line class="tv-bg" x1="0.5" y1="${mid}" x2="${W - 0.5}" y2="${mid}"/>`
-    + `<line class="tv-total" x1="0.5" y1="${mid}" x2="${pTot}" y2="${mid}" stroke="var(--c, ${"#999"})"/>`
-    + `<line class="tv-actuation" x1="${pPre}" y1="2" x2="${pPre}" y2="${H - 2}" stroke="var(--c, ${"#999"})"/>`
+    + `<line class="tv-bg" x1="${cx}" y1="${padY}" x2="${cx}" y2="${H - padY}"/>`
+    + `<line class="tv-total" x1="${cx}" y1="${yTop}" x2="${cx}" y2="${yTot}" stroke="var(--c, #999)"/>`
+    + `<line class="tv-actuation" x1="${cx - 6}" y1="${yPre}" x2="${cx + 6}" y2="${yPre}" stroke="var(--c, #999)"/>`
     + `</svg>`;
 }
 
@@ -577,6 +581,24 @@ function displayName(id) {
   if (!id) return "—";
   const m = state.switchMeta.get(id);
   return (m && m.name) ? m.name : id;
+}
+
+// Render the vertical travel viz next to the fingerprint name.
+// Slot stays empty for switches without a parseable description
+// (user-recorded, no library meta).
+function renderFingerprintTravel(id) {
+  const el = $("fp-travel");
+  if (!el) return;
+  el.innerHTML = "";
+  if (!id) return;
+  const m = state.switchMeta.get(id);
+  const travel = parseTravel(m && m.description);
+  if (!travel) return;
+  el.style.setProperty("--c", colorForSwitch(id));
+  el.innerHTML = travelVizSVG(
+    travel.pre, travel.total,
+    `actuates at ${travel.pre} mm, bottoms out at ${travel.total} mm`,
+  );
 }
 
 // Render the family + type + weight tags next to the fingerprint name.
@@ -1899,6 +1921,7 @@ async function loadSwitchSamples(name) {
   const sw = state.switches.find((s) => s.name === name);
   $("fp-name").textContent = displayName(name);
   renderFingerprintTags(name);
+  renderFingerprintTravel(name);
   refreshExportVisibility();
   if (!sw) {
     state.switchSamples = [];
@@ -3370,14 +3393,8 @@ function makeSwitchTile(sw, isActive, onSelect) {
   tile.dataset.name = sw.name;
   const color = colorForSwitch(sw.name);
   tile.style.setProperty("--c", color);
-  const meta = state.switchMeta.get(sw.name);
-  const travel = parseTravel(meta && meta.description);
-  const viz = travel
-    ? travelVizSVG(travel.pre, travel.total, "actuates at " + travel.pre + " mm, bottoms out at " + travel.total + " mm")
-    : "";
   tile.innerHTML = `
     <button class="swatch" type="button" aria-label="change color"></button>
-    ${viz}
     <span class="name"></span>
     <span class="ct">${sw.count}</span>
   `;
@@ -3900,14 +3917,9 @@ function _renderLibraryList() {
       const parts = desc.split("·").map((s) => s.trim()).filter(Boolean);
       const typeBadge = parts[0] || _switchType(p);
       const weightBadge = parts[1] || "";
-      const travel = parseTravel(desc);
-      const viz = travel
-        ? travelVizSVG(travel.pre, travel.total, "actuates at " + travel.pre + " mm, bottoms out at " + travel.total + " mm")
-        : "";
       tile.innerHTML = `
         <div class="library-tile-head">
           <span class="library-tile-dot"></span>
-          ${viz}
           <span class="library-tile-name"></span>
           <span class="library-tile-check">✓</span>
         </div>
