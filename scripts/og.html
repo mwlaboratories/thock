@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  /* Fonts borrowed from the mwlabs-website node_modules (same family the
+     thock app uses). file:// is fine for local Chromium rendering. */
+  @font-face {
+    font-family: "Fraunces";
+    src: url("../../mwlabs-website/node_modules/.pnpm/@fontsource-variable+fraunces@5.2.9/node_modules/@fontsource-variable/fraunces/files/fraunces-latin-full-normal.woff2") format("woff2");
+    font-weight: 100 900;
+    font-style: normal;
+  }
+  @font-face {
+    font-family: "Fraunces";
+    src: url("../../mwlabs-website/node_modules/.pnpm/@fontsource-variable+fraunces@5.2.9/node_modules/@fontsource-variable/fraunces/files/fraunces-latin-full-italic.woff2") format("woff2");
+    font-weight: 100 900;
+    font-style: italic;
+  }
+  @font-face {
+    font-family: "Plex Sans";
+    src: url("../../mwlabs-website/node_modules/.pnpm/@fontsource+ibm-plex-sans@5.2.8/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400-normal.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+  }
+  @font-face {
+    font-family: "Plex Mono";
+    src: url("../../mwlabs-website/node_modules/.pnpm/@fontsource+ibm-plex-mono@5.2.7/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-600-normal.woff2") format("woff2");
+    font-weight: 600;
+    font-style: normal;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 1200px; height: 630px;
+    background: #ffffff;
+    color: #0b1220;
+    font-family: "Plex Sans", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  body {
+    position: relative;
+    padding: 44px 60px 36px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 22px;
+  }
+
+  /* Amber accent strip in the top-left corner. */
+  .accent {
+    position: absolute;
+    top: 0; left: 0;
+    width: 200px; height: 4px;
+    background: #d97706;
+  }
+
+  .brand {
+    font-family: "Plex Mono", monospace;
+    font-weight: 600;
+    font-size: 14px;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    color: #d97706;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .brand .dot { width: 8px; height: 8px; background: #d97706; }
+  .brand .sub { color: #7e8aa0; }
+
+  .head {
+    margin-top: 8px;
+  }
+  h1 {
+    font-family: "Fraunces", Georgia, serif;
+    font-weight: 400;
+    font-size: 82px;
+    line-height: 0.98;
+    letter-spacing: -2px;
+    color: #0b1220;
+    max-width: 1080px;
+  }
+  h1 em { color: #d97706; font-style: italic; font-weight: 500; }
+
+  .sub {
+    margin-top: 18px;
+    font-family: "Plex Sans", sans-serif;
+    font-size: 22px;
+    line-height: 1.4;
+    color: #475569;
+    max-width: 920px;
+  }
+
+  /* Plot row sits at the bottom — visual proof of what the tool does. */
+  .plot-wrap {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+  }
+  .plot {
+    height: 220px;
+    width: auto;
+    display: block;
+  }
+
+  .foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-family: "Plex Mono", monospace;
+    font-weight: 600;
+    font-size: 14px;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    color: #7e8aa0;
+  }
+  .foot .url { color: #0b1220; }
+  .foot .rule { width: 40px; height: 4px; background: #d97706; }
+</style>
+</head>
+<body>
+  <span class="accent"></span>
+
+  <div>
+    <div class="brand">
+      <span class="dot"></span>
+      <span>THOCK</span>
+      <span class="sub">· SWITCH SOUND LAB</span>
+    </div>
+
+    <div class="head">
+      <h1>Hot-swap switches<br/><em>mid-sentence.</em></h1>
+      <p class="sub">A/B mechanical switches by sound. Live typist, browser only.</p>
+    </div>
+  </div>
+
+  <div class="plot-wrap">
+    <img class="plot" src="../docs/og-plot.png" alt="" />
+  </div>
+
+  <div class="foot">
+    <span class="rule"></span>
+    <span><span class="url">thock.mwlabs.be</span> · open source · cc by 4.0</span>
+  </div>
+</body>
+</html>
