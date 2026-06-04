@@ -2,151 +2,75 @@
 #+AUTHOR: mwlabs
 #+OPTIONS: toc:2 num:nil
 
-A web page for recording mechanical keyswitches into a microphone and
-listening back. Press a switch, thock saves each press as a clip,
-averages the spectrum across many presses into a per-switch
-fingerprint, and plays a library of switches back as if you were
-typing prose. Useful if you're curious what a switch sounds like
-before buying it.
-
-Static site, runs in the browser, files stay local.
+A browser tool to A/B mechanical switches by sound. Record a switch
+into your mic, build a per-switch spectrum fingerprint, play the
+library back as if you were typing prose. Hot-swap switches
+mid-sentence. Static site, files stay local.
 
 Live: *https://thock.mwlabs.be*
 
 [[file:docs/overview.png]]
 
-* What's in the UI
+* UI
 
-** library
+- *library*: 19 pre-recorded switches (16 Kailh Choc v2, 3 v1).
+  Each tile shows type, force, travel; the colour dot matches the
+  stem.
+- *record*: name a switch, hit /▶ record samples/. A metronome
+  paces ~60 taps; thock keeps the cleanest ~30.
+- *fingerprint*: averaged smoothed spectrum across all samples.
+  Picking another switch overlays its curve on the same axes.
+- *inspect*: single-sample view with waveform, FFT, spectrogram,
+  and down→up timing.
+- *typist*: plays the selected switch as prose at a chosen WPM.
+  Click another switch and it hot-swaps mid-sentence.
+- *environment*: filter chain that mimics listening contexts.
+  =raw=, =gasket build=, =foam-lined=, =hollow plastic=, =tin can=,
+  =across desk=, =across room=, =next room=, =underwater=.
+- *export*: zips your recordings with a =meta.json=, ready to
+  contribute.
 
-A curated catalogue of 19 pre-recorded switches you can import in one
-click:
+* Running locally
 
-- 16 Kailh Choc v2 — the full set in the Keebart tester pack
-  (standard Reds / Blues / Brown, the Four Seasons series, the Storm
-  series, the Deep Sea Mini silents, Ice Cream, Purple Swallowtail,
-  Saker, Hide Mountain).
-- 3 Kailh Choc v1 — Ambients Twilight and Nocturnal (silent linears),
-  and Sunset (tactile). A cross-family reference for what the v2
-  generation gives up and gains.
+Static site, no build:
 
-Every entry ships with its type, actuation force, and pre-travel /
-total-travel in millimetres, sourced from manufacturer datasheets.
-The colour dot on each tile matches the actual physical stem colour.
+#+BEGIN_SRC sh
+python -m http.server 8765
+#+END_SRC
 
-The dialog groups tiles by family, with a /+ all (N)/ chip on each
-family heading to bulk-select all unowned entries. Imports fetch in
-parallel (capped at 8 concurrent) so all 19 switches land in a
-fraction of the time a serial import took.
-
-** record samples
-
-Click /+ new/, give the switch a name, then /▶ record samples/. A
-visual metronome paces you through ~60 taps that gradually speed up.
-After the run, thock picks ~30 of the cleanest taps across the
-tempo range and auto-saves them. If too few are usable, the status
-line surfaces a warning so you know to record again.
-
-** fingerprint
-
-Averaged smoothed spectrum across all the samples of the currently
-selected switch, plus a small vertical travel-viz showing where the
-switch's actuation point sits inside its full travel range,
-anchored at the floor like the switch sits on a PCB. Selecting a
-different switch redraws the curves on the same axes for direct
-comparison.
-
-** inspect
-
-Single-sample view — waveform, FFT, spectrogram, and down→up timing
-for the currently picked sample. /▶ play/ in this panel also drops
-the sample's pulse into the typist viz so it slides across the time
-axis in colour.
-
-** typist
-
-Plays back the selected switch's samples as paragraphs of prose at
-a given WPM. Source defaults to a small set of bundled passages;
-attempts to fetch live articles from libertis.net at boot, falls
-back if blocked. Clicking another switch hot-swaps the typist
-mid-sentence so you can A/B without stopping.
-
-An /environment/ dropdown applies a 5-stage filter chain (high-pass,
-low-shelf, peaking, low-pass, high-shelf) to the master output bus,
-shaping the playback to mimic different listening contexts:
-
-- =raw= — bypass, signal as captured
-- =gasket build= — warm boutique custom
-- =foam-lined= — premium dampened, deep thock, no sizzle
-- =hollow plastic= — stock case with a 520 Hz ring
-- =tin can= — laptop / thin keyboard
-- =across desk= / =across room= / =next room= — distance presets
-- =underwater= — for fun
-
-** export
-
-For switches you recorded yourself, /export/ on the samples row
-downloads a zip containing the WAVs plus a =meta.json= built from
-the name / family / type / weight you typed in. Email the zip to
-*info@mwlabs.be* to contribute it to the library.
+Or via [[https://devenv.sh][devenv]]: =devenv up=.
 
 * Contributing recordings
 
-The =library/= ships under CC BY 4.0. New switches are welcome.
-The MX family is the obvious gap. Exotics relevant to splits are
-just as welcome: Kailh Butterfly, low-profile oddballs, anything
-weird and well-built that someone might want to audition before
-committing.
+The library is CC BY 4.0. Switches off the Choc shelf welcome,
+especially MX, Kailh Butterfly, and low-profile oddballs.
 
-** What to aim for
+Bar: decent mic, quiet room, switch tester so the build doesn't
+colour the recording. Bad ones get rejected; mine aren't pristine
+either.
 
-- *Decent mic.* Anything you'd use for a podcast or voiceover is
-  fine. Laptop and phone mics tend to be too noisy and too coloured.
-- *Quiet background.* HVAC, traffic, a fan in the room — it all
-  leaks into the spectrum.
-- *Minimize the build's influence on the sound.* The point is to
-  hear the switch, not the keyboard it's bolted into. A switch
-  tester on an open plate gets closer to that than a fully built
-  board. Plain DSA or OEM-uniform keycaps colour less than sculpted
-  profiles.
-- The library is curated. Recordings that are too noisy, too
-  coloured by the build, or clipped will be rejected. Mine aren't
-  perfectly pristine either. The bar is /good enough that the
-  spectrum reads as the switch, not the room or the case/.
-
-** My setup, for reference
+** Reference setup
 
 [[file:docs/recording-setup.jpg]]
 
-- Beyerdynamic FOX (USB condenser)
-- 3D-printed switch tester plate, plain DSA keycaps
-- Plate resting on a cork coaster (decouples desk thump from the
-  plate ringing through)
-- Quiet home office
-
-You don't have to match this. A thin-plate tester with a cork or
-foam pad under it is a cheap, repeatable way to land in the ballpark.
+Beyerdynamic FOX over a 3D-printed switch tester plate on a cork
+coaster. You don't have to match it; a thin plate on cork or foam
+lands in the same ballpark.
 
 ** Workflow
 
-1. =+ new=, name (=lowercase_with_underscores=, e.g. =mx_red=), set
-   type / actuation force / pretravel / total travel from the
-   manufacturer datasheet.
-2. =▶ record samples=, run the metronome pass (~60 taps).
-3. =export= on the samples row — you get a zip with WAVs and a
-   =meta.json=.
+1. =+ new=, name in =lowercase_with_underscores=, fill in type /
+   force / pretravel / total travel from the datasheet.
+2. =▶ record samples=, run the metronome pass.
+3. =export= gives you a zip.
 
-Two ways to land it in =library/=:
-
-- *Email* the zip to /info@mwlabs.be/ with a link to the switch's
-  datasheet. No Git needed.
-- *Pull request*: unzip into a working dir, run
-  =python scripts/bundle_library.py <that_dir>=, commit the
-  resulting =library/<id>/= and the regenerated =library/index.json=.
+Email it to /info@mwlabs.be/, or open a PR: run
+=python scripts/bundle_library.py <unzipped_dir>= and commit the
+resulting =library/<id>/= and =index.json=.
 
 ** meta.json
 
-Auto-generated by =export=. Hand-edit before sending if needed:
+Auto-generated by =export=. Hand-edit if you need to:
 
 #+BEGIN_SRC json
 {
@@ -157,32 +81,15 @@ Auto-generated by =export=. Hand-edit before sending if needed:
 }
 #+END_SRC
 
-Colour is the UI dot — match the physical stem so the tile reads at
-a glance.
+Colour matches the physical stem.
 
-* Running locally
+* Repo
 
-Static site, no build step:
-
-#+BEGIN_SRC sh
-python -m http.server 8765
-#+END_SRC
-
-Or with [[https://devenv.sh][devenv]]:
-
-#+BEGIN_SRC sh
-devenv up
-#+END_SRC
-
-* What's in this repo
-
-- The thock web app (=index.html=, =app.js=, =styles.css=,
-  =capture-worklet.js=)
-- =scripts/bundle_library.py= — converts a folder of WAV recordings
-  into the FLAC catalog the site serves
-- =library/= — the curated FLAC payload that the site serves
+- =index.html=, =app.js=, =styles.css=, =capture-worklet.js=: the app
+- =scripts/bundle_library.py=: WAVs into a FLAC catalog
+- =library/=: the curated FLAC payload
 
 * License
 
-MIT for the code (=LICENSE=). The =library/= recordings are CC BY 4.0
-(=library/LICENSE=) — attribute MWLabs if you reuse them.
+Code MIT (=LICENSE=). Library recordings CC BY 4.0
+(=library/LICENSE=); attribute MWLabs if you reuse.
