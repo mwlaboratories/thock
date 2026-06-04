@@ -92,9 +92,11 @@ the name / family / type / weight you typed in. Email the zip to
 
 * Contributing recordings
 
-The =library/= ships under CC BY 4.0. New switches are welcome —
-especially anything off the Choc shelf (the whole MX family is the
-obvious gap).
+The =library/= ships under CC BY 4.0. New switches are welcome.
+The MX family is the obvious gap. Exotics relevant to splits are
+just as welcome: Kailh Butterfly, low-profile oddballs, anything
+weird and well-built that someone might want to audition before
+committing.
 
 ** What to aim for
 
@@ -109,7 +111,7 @@ obvious gap).
   profiles.
 - The library is curated. Recordings that are too noisy, too
   coloured by the build, or clipped will be rejected. Mine aren't
-  perfectly pristine either — the bar is /good enough that the
+  perfectly pristine either. The bar is /good enough that the
   spectrum reads as the switch, not the room or the case/.
 
 ** My setup, for reference
@@ -122,7 +124,7 @@ obvious gap).
   plate ringing through)
 - Quiet home office
 
-You don't have to match this — but a thin-plate tester + a cork or
+You don't have to match this. A thin-plate tester with a cork or
 foam pad under it is a cheap, repeatable way to land in the ballpark.
 
 ** Workflow
