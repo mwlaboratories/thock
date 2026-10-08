@@ -25,6 +25,14 @@ class Handler(SimpleHTTPRequestHandler):
         ".mjs": "application/javascript",
     }
 
+    # mirror vercel.json "cleanUrls": /lab serves lab.html
+    def translate_path(self, path):
+        fs_path = super().translate_path(path)
+        p = Path(fs_path)
+        if not p.exists() and not p.suffix and p.with_suffix(".html").is_file():
+            return str(p.with_suffix(".html"))
+        return fs_path
+
     def log_message(self, fmt, *args):
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
 
