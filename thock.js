@@ -1,4 +1,5 @@
 import { Engine, ROOM_LABELS } from "/engine.js";
+import GEO from "/atlas-geometry.js";
 
 const $ = (id) => document.getElementById(id);
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -10,34 +11,17 @@ const store = {
 };
 
 // ============== Atlas geometry =====================================
-// Millimetres, straight from mwlaboratories/atlas pcb/kicad/keyboard.kicad_pcb:
-// switch centres, thumb rotations, Edge.Cuts outline, and the mounting
-// hole between the inner columns where the trackpoint sits.
+// Board millimetres for the built prototype (mwlaboratories/atlas,
+// pcb/atlas/atlas.kicad_pcb: 20 mm columns, 17 mm rows), with the case
+// layers projected from its STLs. See scripts/atlas_geometry.py.
 
-const PITCH = 19.05;
-// [x, y of top-row centre] per column, outer pinky → inner index.
-const COLS = [
-  [93.65, 123.579], [112.7, 112.53], [131.75, 109.482], [150.8, 112.53], [169.85, 114.435],
-  [246.05, 114.435], [265.1, 112.53], [284.15, 109.482], [303.2, 112.53], [322.25, 123.579],
-];
-// [x, y, rotation°] for keymap positions 30..33.
-const THUMBS = [
-  [171.26, 172.976, 14], [190.337, 178.991, 21],
-  [225.563, 178.991, -21], [244.64, 172.976, -14],
-];
-const OUTLINE_L = [
-  [84.125, 95.004], [103.175, 95.004], [103.175, 103.386], [122.225, 103.386],
-  [122.225, 100.338], [141.275, 100.338], [141.275, 103.386], [160.325, 103.386],
-  [160.325, 105.291], [179.375, 105.291], [179.375, 164.727], [202.495, 173.612],
-  [195.758, 191.206], [178.232, 184.538], [160.325, 179.966], [160.325, 159.964],
-  [103.175, 159.964], [103.175, 171.204], [84.125, 171.204],
-];
-const MIRROR_X = 415.9;   // left x + right x for every mirrored feature
-const OUTLINE_R = OUTLINE_L.map(([x, y]) => [MIRROR_X - x, y]);
-const TRACKPOINTS = [[160.325, 123.007], [255.575, 123.007]];
-const HALF_VIEW = { L: [80, 91, 126.5, 104.2], R: [209.4, 91, 126.5, 104.2] };
-const CAP_W = 17.4, CAP_H = 16.4;
-const BOARD_CX = MIRROR_X / 2;
+const PITCH_X = 20, PITCH_Y = 17;
+const CAP_W = 17.5, CAP_H = 16.2;
+const BOARD_CX = GEO.mirrorX / 2;
+const HALF_VIEW = { L: [15, 25, 137, 103.5], R: [GEO.mirrorX - 152, 25, 137, 103.5] };
+// Alpha switches column-major (x, then y); thumbs left → right.
+const ALPHAS = GEO.switches.filter((s) => s[1] < 100).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+const THUMBS = GEO.switches.filter((s) => s[1] >= 100).sort((a, b) => a[0] - b[0]);
 
 // Atlas default layer (images/keymap.svg), keymap positions 0..33.
 const BASE = [
@@ -48,12 +32,8 @@ const HOLD = { 30: "", 31: "sym", 32: "num" };
 const TAP_TEXT = { 19: null, 29: null, 30: " ", 31: "", 32: "\n", 33: "" };
 
 const KEYS = BASE.map((label, pos) => {
-  if (pos < 30) {
-    const [x, y0] = COLS[pos % 10];
-    return { pos, label, x, y: y0 + Math.floor(pos / 10) * PITCH, r: 0, half: pos % 10 < 5 ? "L" : "R" };
-  }
-  const [x, y, r] = THUMBS[pos - 30];
-  return { pos, label, x, y, r, half: pos < 32 ? "L" : "R" };
+  const [x, y, r] = pos < 30 ? ALPHAS[(pos % 10) * 3 + Math.floor(pos / 10)] : THUMBS[pos - 30];
+  return { pos, label, x, y, r, half: x < BOARD_CX ? "L" : "R" };
 });
 
 // Physical key (event.code) → Atlas position. Letters sit where they do
@@ -320,17 +300,20 @@ function renderBoard() {
       preserveAspectRatio: "xMidYMid meet",
       role: "presentation",
     }, board);
-    const pts = (half === "L" ? OUTLINE_L : OUTLINE_R).map((p) => p.join(",")).join(" ");
-    el("polygon", { class: "case-shadow", points: pts, transform: "translate(0 1.6)" }, svg);
-    el("polygon", { class: "case", points: pts }, svg);
-    el("polygon", { class: "plate", points: pts }, svg);
+    const layers = half === "L" ? GEO.left : GEO.right;
+    const shadow = el("g", { class: "case-shadow", transform: "translate(0 1.8)" }, svg);
+    el("path", { d: layers.cover }, shadow);
+    el("path", { d: layers.case }, shadow);
+    el("path", { class: "cover", d: layers.cover }, svg);
+    el("path", { class: "case", d: layers.case }, svg);
+    el("path", { class: "case-top", d: layers.top }, svg);
     for (const k of KEYS.filter((k) => k.half === half)) {
       const g = el("g", {
         class: "key",
         "data-pos": k.pos,
         transform: `translate(${k.x} ${k.y})${k.r ? ` rotate(${k.r})` : ""}`,
       }, svg);
-      el("rect", { class: "hit", x: -PITCH / 2, y: -PITCH / 2, width: PITCH, height: PITCH }, g);
+      el("rect", { class: "hit", x: -PITCH_X / 2, y: -PITCH_Y / 2, width: PITCH_X, height: PITCH_Y }, g);
       el("rect", { class: "cap-side", x: -CAP_W / 2, y: -CAP_H / 2 + 1.1, width: CAP_W, height: CAP_H, rx: 2.4 }, g);
       const cap = el("g", { class: "cap" }, g);
       el("rect", { class: "cap-top", x: -CAP_W / 2, y: -CAP_H / 2, width: CAP_W, height: CAP_H, rx: 2.4 }, cap);
@@ -344,10 +327,10 @@ function renderBoard() {
       }
       keyEls[k.pos] = g;
     }
-    for (const [x, y] of TRACKPOINTS) {
+    for (const [x, y] of GEO.trackpoints) {
       if ((half === "L") !== (x < BOARD_CX)) continue;
-      el("circle", { class: "nub-ring", cx: x, cy: y, r: 2.7 }, svg);
-      el("circle", { class: "nub", cx: x, cy: y, r: 2.1 }, svg);
+      el("circle", { class: "nub-ring", cx: x, cy: y, r: 2.5 }, svg);
+      el("circle", { class: "nub", cx: x, cy: y, r: 2.0 }, svg);
     }
   }
   board.addEventListener("pointerdown", onPointerDown);
@@ -380,7 +363,7 @@ function releaseAll() {
 
 function sound(pos) {
   const k = pos != null ? KEYS[pos] : null;
-  const pan = k ? (k.x - BOARD_CX) / 124 : 0;
+  const pan = k ? (k.x - BOARD_CX) / 116 : 0;
   engine.play(state.active, pan);
 }
 
